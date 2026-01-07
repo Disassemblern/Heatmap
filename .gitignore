@@ -1,0 +1,10 @@
+__pycache__
+hm_env
+
+fixed_clip.mp4
+tracked_output.mp4
+
+heatmap.txt
+yolov8s.pt
+
+main.py
