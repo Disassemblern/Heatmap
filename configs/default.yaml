@@ -1,0 +1,27 @@
+pitch:
+  length_m: 105.0
+  width_m: 68.0
+
+detect:
+  model_path: models/yolov8m.pt
+  conf_store: 0.10
+  imgsz: 1280
+  device: cuda
+
+track:
+  kind: deepsort
+  conf_min: 0.40
+  max_age: 30
+  n_init: 3
+
+calib:
+  keyframe_every_s: 10.0
+  min_landmarks: 6
+  ransac_reproj_px: 3.0
+  drift_warn_m: 1.0
+  drift_fail_m: 2.0
+
+heat:
+  cell_m: 0.5
+  sigma_m: 2.0
+  min_track_s: 10.0

@@ -1,0 +1,7 @@
+https://www.youtube.com/@Roboflow/videos
+https://www.reddit.com/r/computervision/comments/zf8903/football_players_tracking_with_yolov5_bytetrack/
+https://www.youtube.com/watch?v=QCG8QMhga9k
+https://github.com/roboflow/notebooks/blob/main/notebooks/how-to-track-football-players.ipynb
+https://www.geniussports.com/sportsbooks/
+https://github.com/dasdebanna/Football-Player-Detection-YOLOv8/blob/main/football-player-detection-yolov8.ipynb
+https://github.com/dasdebanna/Football-Player-Detection-YOLOv8

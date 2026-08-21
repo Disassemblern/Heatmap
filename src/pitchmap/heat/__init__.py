@@ -1,0 +1,1 @@
+"""Heatmap accumulation and rendering."""

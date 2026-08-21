@@ -1,0 +1,45 @@
+Video input -> Frame Sampling -> Player Detection -> Player Tracking -> Pitch mapping -> Position Accumulation -> Heatmap visualization
+
+1- Video handling and frame extr.
+	- Extract frames at fixed Fps (5-10) 
+	- Save frame index + timestamp
+
+2- Filter only wide angle frames
+	- use simple heuristic or lightweight CNN classifier
+	- Detect large green area ratio
+	- return valid_frame = true / false
+
+3- Player detection
+	- Detect all players in each valid frame
+	- Run object detection
+	- Extract bounding boxes
+	- Compute center point for each player
+	- Yolo v8
+	- output per frame need to return Detections = [(x_center, y_center, confidence), ]
+
+4- Player Tracking
+	- Assign persistent IDs to players accross frames
+	- Give detections frame by frame into tracker
+	- Tracker assigns player IDs 
+	- ByteTrack
+
+5- Pitch Coordinate Normalization
+	- Make movement positions comparable across frames
+	- Convert pixel coordinates -> normalized pitch space
+	- player ID -> (x_norm, y_norm)
+
+6- Store player position history 
+	- player ID -> list of positions frame by frame
+	- because heatmap = density of position over time
+
+7- Generate heatmaps
+	- Turn movement points into visual heatmaps 
+
+8- Overlay heatmap on Football Pitch 
+
+
+# Work on filtering mechanism: Define a layer by layer filtering for possible mistrackings.
+maybe keep in mind that instead of tracking for each frame keep the players after detect and then make the tracking.
+Relative motion tracking does not work properly
+
+At the end ask it to return the image with the last detected players
