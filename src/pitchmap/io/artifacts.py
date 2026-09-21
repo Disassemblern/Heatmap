@@ -16,6 +16,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from pitchmap.config import Config, changed_fields
 from pitchmap.io.video import VideoMeta
 
 RUNS_ROOT = Path("data/runs")
@@ -106,8 +107,13 @@ def run_paths(run_dir: Path | str) -> RunPaths:
     return RunPaths(root=Path(run_dir))
 
 
-def create_run(video_path: Path | str, meta: VideoMeta, config: dict[str, Any]) -> RunPaths:
-    """Create (or reuse) the run directory for a clip and write its metadata."""
+def create_run(video_path: Path | str, meta: VideoMeta) -> RunPaths:
+    """Create (or reuse) the run directory for a clip and write its metadata.
+
+    No config is recorded here. Stages run later, with their own flag
+    overrides, so a snapshot taken at creation describes nothing that actually
+    ran; record_stage stamps the settings each stage really used instead.
+    """
     paths = run_paths(RUNS_ROOT / Path(video_path).stem)
     paths.root.mkdir(parents=True, exist_ok=True)
     paths.calib_dir.mkdir(exist_ok=True)
@@ -118,7 +124,6 @@ def create_run(video_path: Path | str, meta: VideoMeta, config: dict[str, Any]) 
         {
             **existing,
             "video": vars(meta),
-            "config": config,
             "stages": existing.get("stages", {}),
         },
     )
@@ -137,13 +142,23 @@ def video_meta(paths: RunPaths) -> VideoMeta:
     return VideoMeta(**read_meta(paths)["video"])
 
 
-def record_stage(paths: RunPaths, stage: str, details: dict[str, Any] | None = None) -> None:
-    """Stamp a stage as completed, with optional details, for provenance."""
+def record_stage(
+    paths: RunPaths,
+    stage: str,
+    details: dict[str, Any] | None = None,
+    config: Config | None = None,
+) -> None:
+    """Stamp a stage as completed, with optional details, for provenance.
+
+    The recorded config holds only what differed from the defaults, so an empty
+    dict means the stage ran on the checked-in configs/default.yaml.
+    """
     meta = read_meta(paths)
     stages = dict(meta.get("stages", {}))
     stages[stage] = {
         "completed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         **(details or {}),
+        **({"config": changed_fields(config)} if config is not None else {}),
     }
     write_meta(paths, {**meta, "stages": stages})
 

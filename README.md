@@ -40,21 +40,40 @@ python -m venv hm_env
 hm_env\Scripts\python.exe -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 hm_env\Scripts\python.exe -m pip install -r requirements.txt
 hm_env\Scripts\python.exe -m pip install -e .
-hm_env\Scripts\python.exe scripts\check_env.py
+hm_env\Scripts\python.exe -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 ```
 
 ## Models
 
 Three weight files belong in `models/`, which is not tracked:
 
-| File | Used by | Source |
-| --- | --- | --- |
-| `yolov8m.pt` | `detect` | Downloaded automatically by ultralytics on first run. |
-| `yolo-football-pitch-detection.pt` | `calibrate` | YOLOv8x-pose, 32 pitch keypoints, AGPL. **TODO: record the exact Hugging Face repo id here.** |
-| `osnet_sports.pth.tar-60` | `track` (deep_eiou), `refine` | OSNet ReID trained on sports footage, 616 identities. **TODO: record the exact source here.** |
+| File | Used by | What it is | Licence |
+| --- | --- | --- | --- |
+| `yolov8m.pt` | `detect` | Ultralytics YOLOv8m, COCO `person` class | AGPL-3.0 |
+| `yolo-football-pitch-detection.pt` | `calibrate` | YOLOv8x-pose fine-tuned for 32 pitch keypoints | AGPL-3.0 |
+| `osnet_sports.pth.tar-60` | `track` (deep_eiou), `refine` | OSNet ReID trained on SportsMOT, 616 identities | none published |
 
-Only the first downloads itself. `calibrate`, `track` and `refine` fail without
-the other two, so record their sources above before cloning this anywhere.
+`yolov8m.pt` downloads itself on first run. The other two are manual, and
+`calibrate`, `track` and `refine` all fail without them.
+
+**Pitch keypoints** - [martinjolif/yolo-football-pitch-detection](https://huggingface.co/martinjolif/yolo-football-pitch-detection)
+on Hugging Face. The keypoint index to pitch-metre mapping this repo fits
+against is in `src/pitchmap/calib/keypoints.py`, and it uses regulation
+distances (16.5 m penalty box), not the 20.15 m in some published configs for
+the same layout.
+
+```powershell
+curl.exe -L -o models\yolo-football-pitch-detection.pt https://huggingface.co/martinjolif/yolo-football-pitch-detection/resolve/main/yolo-football-pitch-detection.pt
+```
+
+**ReID** - the `sports_model.pth.tar-60` checkpoint from
+[hsiangwei0903/Deep-EIoU](https://github.com/hsiangwei0903/Deep-EIoU), served
+from the [Google Drive folder](https://drive.google.com/drive/folders/1wItcb0yeGaxOS08_G9yRWBTnpVf0vZ2w)
+its README links. Download it by hand and save it as
+`models/osnet_sports.pth.tar-60` - this repo uses the renamed copy, so the
+rename is not optional. It publishes no licence; it is used here for personal,
+non-commercial work only, like the vendored tracker it comes with (see
+`src/pitchmap/vendor/README.md`).
 
 ## Usage
 
@@ -80,7 +99,6 @@ configs/    pipeline settings
 data/       raw clips and per-clip run directories (not tracked)
 docs/notes/ working notes and research links
 models/     model weights (not tracked, see Models)
-scripts/    standalone helper scripts
 src/pitchmap/
   cli/      one thin entrypoint per stage
   io/       video reading, run artifacts, MOT format
@@ -153,11 +171,15 @@ Numbers worth checking, printed by the stages themselves:
 | Stage | Healthy on the test clip |
 | --- | --- |
 | `calibrate` | 5499/5500 frames, median residual 0.52 m |
-| `track` | 188 tracklets, median about 12 s |
-| `team` | an even A/B split, silhouette above 0.5, a handful of `other` |
-| `refine` | 75 tracklets, 55 over 20 s, median 54 s, coverage 0.83 |
+| `track` | 188 tracklets, median 8.1 s, coverage 0.83 |
+| `team` | fitted on 88 of 188, an even A/B split (50/48), 38 `other` |
+| `refine` | 82 tracklets, 61 over 20 s, median 40 s, coverage 0.83 |
 | `project` | about 88 percent valid, median implied speed under 2 m/s |
-| `heatmap` | about 47 rendered, officials skipped by label |
+| `heatmap` | 50 rendered of 82, officials and touchline staff skipped |
+
+Every stage records what it actually ran with in `data/runs/<clip>/meta.json`,
+under its own entry. The `config` it stamps there lists only what differed from
+`configs/default.yaml`, so an empty one means the stage ran on the defaults.
 
 `project` reports why samples were rejected. `out_of_bounds` is mostly touchline
 staff and substitutes; `teleport` marks jumps faster than a player can run,
@@ -213,7 +235,7 @@ Measured on the test clip:
 | --- | --- | --- |
 | ByteTrack (previous) | 405 | 4.8 s |
 | Deep-EIoU | 188 | 8.1 s |
-| after `refine` | 59 | 62.1 s |
+| after `refine` | 82 | 40.2 s |
 
 `refine` always works from `tracks_raw.parquet`, so re-running it with different
 parameters is idempotent and never compounds. `track` deletes the refine and
@@ -236,8 +258,9 @@ images and correcting two columns: set `verdict` to `mixed` where a strip shows
 more than one person, and fix `team` where the label is wrong. `eval` scores the
 result.
 
-Measured on the test clip: 92 percent of tracklets are one person (94 percent by
-duration), and team labels agree with the human on 95 percent of them.
+Measured on the test clip, over the 61 tracklets long enough to judge: 92
+percent are one person (94 percent by duration), and team labels agree with the
+human on 95 percent of the 56 that carry one.
 
 Judgements are keyed to track ids, and refine renumbers those on every run, so
 `review` stores a fingerprint of the tracklets it described and `eval` refuses to

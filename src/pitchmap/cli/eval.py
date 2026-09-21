@@ -15,7 +15,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def run(args: argparse.Namespace) -> None:
-    load_config(args.config)
+    config = load_config(args.config)
     paths = artifacts.run_paths(args.run)
     meta = artifacts.video_meta(paths)
 
@@ -37,5 +37,5 @@ def run(args: argparse.Namespace) -> None:
     print(report.format())
 
     paths.eval_report.write_text(json.dumps(vars(report), indent=2), encoding="utf-8")
-    artifacts.record_stage(paths, "eval", vars(report))
+    artifacts.record_stage(paths, "eval", vars(report), config)
     print(f"\nArtifact: {paths.eval_report}")

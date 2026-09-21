@@ -97,6 +97,7 @@ def run(args: argparse.Namespace) -> None:
             "fitted_on": len(fit_ids),
             **{f"n_{name}": int(count) for name, count in counts.items()},
         },
+        config,
     )
 
     print(f"Fitted two clusters on {len(fit_ids)} long on-pitch tracklets")

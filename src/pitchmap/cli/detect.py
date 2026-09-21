@@ -89,6 +89,7 @@ def run(args: argparse.Namespace) -> None:
         paths,
         "detect",
         {"detector": detector.describe(), "frames": stop, "detections": len(table)},
+        config,
     )
 
     per_frame = len(table) / stop if stop else 0.0

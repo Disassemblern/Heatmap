@@ -16,7 +16,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 def run(args: argparse.Namespace) -> None:
     config = load_config(args.config)
     meta = read_meta(args.video)
-    paths = artifacts.create_run(args.video, meta, config.to_dict())
+    paths = artifacts.create_run(args.video, meta)
 
     print(f"Run directory: {paths.root}")
     print(

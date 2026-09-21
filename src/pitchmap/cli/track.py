@@ -112,7 +112,9 @@ def run(args: argparse.Namespace) -> None:
     _save_embeddings(paths, table, feats)
 
     summary = fragmentation_summary(table, meta.fps, stop)
-    artifacts.record_stage(paths, "track", {"tracker": tracker.describe(), **summary})
+    artifacts.record_stage(
+        paths, "track", {"tracker": tracker.describe(), **summary}, config
+    )
 
     print(format_summary(summary))
     print(f"Artifacts: {paths.tracks}, {paths.tracks_mot}")

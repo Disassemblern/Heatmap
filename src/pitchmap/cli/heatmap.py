@@ -101,7 +101,7 @@ def run(args: argparse.Namespace) -> None:
     )
 
     artifacts.record_stage(
-        paths, "heatmap", {"tracklets": len(summary), "rendered": len(entries)}
+        paths, "heatmap", {"tracklets": len(summary), "rendered": len(entries)}, config
     )
     print(f"Rendered {len(entries)} tracklet heatmaps plus an aggregate")
     print(f"Artifacts: {paths.heatmaps_dir}")

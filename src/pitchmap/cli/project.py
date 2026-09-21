@@ -56,6 +56,9 @@ def run(args: argparse.Namespace) -> None:
         )
 
     artifacts.record_stage(
-        paths, "project", {"samples": len(positions), "valid_share": share, "smoothed": args.smooth}
+        paths,
+        "project",
+        {"samples": len(positions), "valid_share": share, "smoothed": args.smooth},
+        config,
     )
     print(f"Artifact: {paths.positions}")

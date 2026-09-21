@@ -70,7 +70,7 @@ def run(args: argparse.Namespace) -> None:
     click_tool.close_windows()
     annotated = {frame: clicks for frame, clicks in keyframes.items() if len(clicks) >= 4}
     artifacts.record_stage(
-        paths, "annotate", {"keyframes": len(keyframes), "fittable": len(annotated)}
+        paths, "annotate", {"keyframes": len(keyframes), "fittable": len(annotated)}, config
     )
     print(f"\nSaved {len(keyframes)} keyframes ({len(annotated)} with enough landmarks to fit)")
     print(f"Artifact: {paths.keyframes}")

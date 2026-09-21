@@ -201,6 +201,7 @@ def run(args: argparse.Namespace) -> None:
             "merge_dist_thres": refine.merge_dist_thres,
             **summary,
         },
+        config,
     )
 
     print(format_summary(summary))

@@ -116,8 +116,6 @@ class Config:
     calib: CalibConfig = CalibConfig()
     heat: HeatConfig = HeatConfig()
 
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
 
 
 def load_config(path: Path | str | None = None) -> Config:
@@ -145,3 +143,22 @@ def with_overrides(config: Config, section: str, **overrides: Any) -> Config:
     if not applied:
         return config
     return replace(config, **{section: replace(getattr(config, section), **applied)})
+
+
+def changed_fields(config: Config) -> dict[str, dict[str, Any]]:
+    """Settings that differ from the dataclass defaults, by section.
+
+    Stamped into run metadata per stage. The full defaults are in
+    configs/default.yaml under version control, so only the deltas carry
+    information, and a stage's own flag overrides show up here.
+    """
+    defaults = asdict(Config())
+    return {
+        section: {
+            key: value
+            for key, value in values.items()
+            if defaults[section][key] != value
+        }
+        for section, values in asdict(config).items()
+        if values != defaults[section]
+    }

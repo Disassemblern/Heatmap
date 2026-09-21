@@ -216,5 +216,6 @@ def _report(paths, config, n_frames, source, residual_m, n_points, matrices, gri
             "median_residual_m": float(np.median(finite)) if finite.size else None,
             "automatic": True,
         },
+        config,
     )
     print(f"Artifact: {paths.homographies}")
