@@ -46,6 +46,22 @@ class RunPaths:
         return self.calib_dir / "keypoints.parquet"
 
     @property
+    def embeddings(self) -> Path:
+        return self.root / "embeddings.npz"
+
+    @property
+    def tracks_raw(self) -> Path:
+        return self.root / "tracks_raw.parquet"
+
+    @property
+    def team(self) -> Path:
+        return self.root / "team.parquet"
+
+    @property
+    def team_features(self) -> Path:
+        return self.root / "team_features.npz"
+
+    @property
     def positions(self) -> Path:
         return self.root / "positions.parquet"
 
@@ -70,8 +86,20 @@ class RunPaths:
         return self.root / "overlays"
 
     @property
-    def crops_dir(self) -> Path:
-        return self.root / "crops"
+    def review_dir(self) -> Path:
+        return self.root / "review"
+
+    @property
+    def review(self) -> Path:
+        return self.root / "review.csv"
+
+    @property
+    def review_key(self) -> Path:
+        return self.root / "review_key.json"
+
+    @property
+    def eval_report(self) -> Path:
+        return self.root / "eval_report.json"
 
 
 def run_paths(run_dir: Path | str) -> RunPaths:
@@ -151,6 +179,38 @@ def guard_truncation(path: Path, new_frames: int, force: bool) -> None:
             f"{new_frames}. Re-run without --limit, pass --force to overwrite, or "
             f"use a separate run directory for the smoke test."
         )
+
+
+def write_embeddings(
+    paths: RunPaths,
+    feat: np.ndarray,
+    frame: np.ndarray,
+    track_id: np.ndarray,
+) -> None:
+    """Persist per-track-row appearance embeddings, row-aligned with tracks.parquet.
+
+    frame and track_id are stored redundantly so consumers can verify the
+    alignment instead of trusting it.
+    """
+    np.savez(
+        paths.embeddings,
+        feat=feat.astype(np.float16),
+        frame=frame.astype(np.int32),
+        track_id=track_id.astype(np.int32),
+    )
+
+
+def read_embeddings(paths: RunPaths) -> dict[str, np.ndarray]:
+    if not paths.embeddings.exists():
+        raise FileNotFoundError(
+            f"Missing artifact: {paths.embeddings}. Run 'track' with the deep_eiou backend first."
+        )
+    with np.load(paths.embeddings) as data:
+        return {
+            "feat": data["feat"].astype(np.float32),
+            "frame": data["frame"],
+            "track_id": data["track_id"],
+        }
 
 
 def write_homographies(

@@ -1,0 +1,1 @@
+"""Player re-identification embeddings."""

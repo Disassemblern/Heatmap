@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 import numpy as np
 import supervision as sv
@@ -17,9 +17,11 @@ class Track:
     x2: float
     y2: float
     conf: float
+    # Appearance embedding of this frame's matched detection, when the backend
+    # computes one (L2-normalised float32). None for motion-only backends.
+    feat: np.ndarray | None = None
 
 
-@runtime_checkable
 class Tracker(Protocol):
     """Associates detections across frames.
 
@@ -33,4 +35,7 @@ class Tracker(Protocol):
         frame: np.ndarray,
         detections: sv.Detections,
     ) -> tuple[Track, ...]:
+        ...
+
+    def describe(self) -> str:
         ...

@@ -26,6 +26,27 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Also render tracklets whose median position is off the pitch (coaches, staff)",
     )
+    parser.add_argument(
+        "--keep-officials",
+        action="store_true",
+        help="Also render tracklets the team stage labelled other (referees, goalkeepers)",
+    )
+
+
+def _drop_officials(paths, kept):
+    """Remove tracklets the team stage labelled as belonging to neither team.
+
+    Referees run where players run, so position cannot exclude them; only the
+    jersey colour can. Tracklets labelled unknown are kept, since an unknown
+    label means the evidence was too weak to act on.
+    """
+    if not paths.team.exists():
+        return kept, []
+
+    labels = artifacts.read_table(paths.team)
+    other = set(labels.loc[labels["team"] == "other", "track_id"])
+    dropped = [t for t in kept["track_id"] if t in other]
+    return kept[~kept["track_id"].isin(other)], dropped
 
 
 def run(args: argparse.Namespace) -> None:
@@ -44,6 +65,13 @@ def run(args: argparse.Namespace) -> None:
         if len(dropped):
             ids = ", ".join(str(int(t)) for t in dropped["track_id"])
             print(f"Skipped {len(dropped)} tracklet(s) whose median position is off the pitch: {ids}")
+
+    if not args.keep_officials:
+        kept, officials = _drop_officials(paths, kept)
+        if officials:
+            ids = ", ".join(str(int(t)) for t in officials)
+            print(f"Skipped {len(officials)} official/other tracklet(s) by team label: {ids}")
+
     print(
         f"{len(summary)} tracklets total, {len(kept)} last at least "
         f"{config.heat.min_track_s:.0f} s"

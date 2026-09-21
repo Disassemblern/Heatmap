@@ -9,16 +9,13 @@ from pitchmap.calib.homography import apply
 from pitchmap.calib.pitch import line_segments
 from pitchmap.config import PitchConfig
 
-COLOUR_KEYFRAME = (0, 255, 0)
 COLOUR_FITTED = (0, 255, 255)
 COLOUR_POOR = (0, 80, 255)
 MINIMAP_SCALE = 3
 
 
-def line_colour(source: str, residual_m: float, warn_m: float) -> tuple[int, int, int]:
+def line_colour(residual_m: float, warn_m: float) -> tuple[int, int, int]:
     """Colour the reprojected pitch by how much its frame's fit can be trusted."""
-    if source == "keyframe":
-        return COLOUR_KEYFRAME
     if np.isfinite(residual_m) and residual_m > warn_m:
         return COLOUR_POOR
     return COLOUR_FITTED
@@ -55,17 +52,44 @@ def draw_hud(frame: np.ndarray, lines: list[str]) -> np.ndarray:
     return frame
 
 
-def draw_tracks(frame: np.ndarray, boxes: np.ndarray, track_ids: np.ndarray) -> np.ndarray:
+def draw_boxes(
+    frame: np.ndarray,
+    boxes: np.ndarray,
+    colour: tuple[int, int, int] = (0, 255, 0),
+) -> np.ndarray:
+    """Draw plain boxes with no ids, for raw detections."""
+    for x1, y1, x2, y2 in boxes.astype(int):
+        cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
+    return frame
+
+
+def draw_tracks(
+    frame: np.ndarray,
+    boxes: np.ndarray,
+    track_ids: np.ndarray,
+    colours: dict[int, tuple[int, int, int]] | None = None,
+) -> np.ndarray:
+    """Draw track boxes, optionally coloured per track id (used for teams)."""
     for (x1, y1, x2, y2), track_id in zip(boxes.astype(int), track_ids, strict=True):
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        colour = (0, 255, 0) if colours is None else colours.get(int(track_id), (0, 255, 0))
+        cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
         cv2.putText(
             frame, str(int(track_id)), (x1, y1 - 6),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 3
+        )
+        cv2.putText(
+            frame, str(int(track_id)), (x1, y1 - 6),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, colour, 1
         )
     return frame
 
 
-def minimap(pitch: PitchConfig, points: np.ndarray, track_ids: np.ndarray) -> np.ndarray:
+def minimap(
+    pitch: PitchConfig,
+    points: np.ndarray,
+    track_ids: np.ndarray,
+    colours: dict[int, tuple[int, int, int]] | None = None,
+) -> np.ndarray:
     """Top-down pitch showing where the tracked players were projected."""
     height = int(pitch.width_m * MINIMAP_SCALE)
     width = int(pitch.length_m * MINIMAP_SCALE)
@@ -79,7 +103,8 @@ def minimap(pitch: PitchConfig, points: np.ndarray, track_ids: np.ndarray) -> np
         if not np.isfinite([x_m, y_m]).all():
             continue
         centre = (int(x_m * MINIMAP_SCALE), int(y_m * MINIMAP_SCALE))
-        cv2.circle(canvas, centre, 4, (0, 220, 255), -1)
+        dot = (0, 220, 255) if colours is None else colours.get(int(track_id), (0, 220, 255))
+        cv2.circle(canvas, centre, 4, dot, -1)
         cv2.putText(
             canvas, str(int(track_id)), (centre[0] + 5, centre[1] - 5),
             cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1
@@ -96,6 +121,28 @@ def inset(frame: np.ndarray, panel: np.ndarray, margin: int = 12) -> np.ndarray:
     x1 = frame.shape[1] - resized.shape[1] - margin
     frame[y1 : y1 + resized.shape[0], x1 : x1 + resized.shape[1]] = resized
     return frame
+
+
+def with_minimap(
+    frame: np.ndarray,
+    pitch: PitchConfig,
+    projected,
+    colours: dict[int, tuple[int, int, int]] | None = None,
+) -> np.ndarray:
+    """Composite the pitch inset for one frame's valid projected positions."""
+    if projected is None:
+        return frame
+    valid = projected[projected["valid"]]
+    panel = minimap(
+        pitch, valid[["x_m", "y_m"]].to_numpy(), valid["track_id"].to_numpy(), colours
+    )
+    return inset(frame, panel)
+
+
+def show(window: str, canvas: np.ndarray) -> bool:
+    """Display a frame in a window. Returns False when the user presses q."""
+    cv2.imshow(window, canvas)
+    return (cv2.waitKey(1) & 0xFF) != ord("q")
 
 
 def writer(path, fps: float, width: int, height: int) -> cv2.VideoWriter:

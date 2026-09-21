@@ -15,14 +15,22 @@ from tqdm import tqdm
 
 from pitchmap.calib import keypoints as kp
 from pitchmap.calib.homography import apply, fit_keyframe, fit_points, is_plausible
-from pitchmap.calib.propagate import SOURCE_MISSING, sample_grid
 from pitchmap.config import load_config
 from pitchmap.io import artifacts
 from pitchmap.io.video import iter_frames
 
 SOURCE_AUTO = "auto"
 SOURCE_SMOOTHED = "smoothed"
+SOURCE_MISSING = "missing"
 DEFAULT_MODEL = "models/yolo-football-pitch-detection.pt"
+
+
+def sample_grid(width: int, height: int, steps: int = 6) -> np.ndarray:
+    """Pixel sample points used to smooth the homography sequence in metric space."""
+    xs = np.linspace(0.05 * width, 0.95 * width, steps)
+    ys = np.linspace(0.05 * height, 0.95 * height, steps)
+    grid_x, grid_y = np.meshgrid(xs, ys)
+    return np.stack([grid_x.ravel(), grid_y.ravel()], axis=1)
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:

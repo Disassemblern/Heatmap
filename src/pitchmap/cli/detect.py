@@ -12,7 +12,7 @@ from pitchmap.config import load_config, with_overrides
 from pitchmap.detect.yolo import YoloDetector
 from pitchmap.io import artifacts
 from pitchmap.io.video import iter_frames
-from pitchmap.viz.overlay import draw_hud
+from pitchmap.viz.overlay import draw_boxes, draw_hud, show
 
 WINDOW = "pitchmap detect"
 
@@ -33,12 +33,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _display(frame, detections, index: int) -> bool:
     """Draw detections in a window. Returns False when the user asks to stop."""
-    canvas = frame.copy()
-    for x1, y1, x2, y2 in detections.xyxy.astype(int):
-        cv2.rectangle(canvas, (x1, y1), (x2, y2), (0, 255, 0), 2)
+    canvas = draw_boxes(frame.copy(), detections.xyxy)
     canvas = draw_hud(canvas, [f"frame {index}  detections {len(detections.xyxy)}"])
-    cv2.imshow(WINDOW, canvas)
-    return (cv2.waitKey(1) & 0xFF) != ord("q")
+    return show(WINDOW, canvas)
 
 
 def run(args: argparse.Namespace) -> None:

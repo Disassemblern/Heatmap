@@ -17,14 +17,16 @@ so error cannot accumulate.
 ## Pipeline
 
 ```
-video -> detect -> track -> annotate -> calibrate -> project -> heatmap
-                                                  \-> overlay (sanity videos)
+video -> detect -> calibrate -> track -> team -> refine -> project -> heatmap
+                                                                  \-> overlay / preview
 ```
 
 | Stage | Output | Purpose |
 | --- | --- | --- |
 | `detect` | `detections.parquet` | Per-frame player boxes, stored at a low confidence floor |
-| `track` | `tracks.parquet`, `tracks_mot.txt` | Track ids across frames (MOT export for later tooling) |
+| `track` | `tracks.parquet`, `tracks_mot.txt`, `embeddings.npz` | Track ids across frames, with appearance embeddings |
+| `team` | `team.parquet`, `team_features.npz` | Tracklets clustered into two teams by jersey colour |
+| `refine` | `tracks.parquet` (rewritten), `tracks_raw.parquet` | Offline split of hidden id switches, reconnect of fragments |
 | `annotate` | `calib/keyframes.json` | Optional manual landmark clicks, used to cross-check calibration |
 | `calibrate` | `calib/homographies.npz` | Per-frame pixel-to-metre homography from detected pitch keypoints |
 | `project` | `positions.parquet` | Foot points projected into pitch metres |
@@ -41,17 +43,31 @@ hm_env\Scripts\python.exe -m pip install -e .
 hm_env\Scripts\python.exe scripts\check_env.py
 ```
 
+## Models
+
+Three weight files belong in `models/`, which is not tracked:
+
+| File | Used by | Source |
+| --- | --- | --- |
+| `yolov8m.pt` | `detect` | Downloaded automatically by ultralytics on first run. |
+| `yolo-football-pitch-detection.pt` | `calibrate` | YOLOv8x-pose, 32 pitch keypoints, AGPL. **TODO: record the exact Hugging Face repo id here.** |
+| `osnet_sports.pth.tar-60` | `track` (deep_eiou), `refine` | OSNet ReID trained on sports footage, 616 identities. **TODO: record the exact source here.** |
+
+Only the first downloads itself. `calibrate`, `track` and `refine` fail without
+the other two, so record their sources above before cloning this anywhere.
+
 ## Usage
 
 ```powershell
 hm_env\Scripts\python.exe -m pitchmap init-run  --video data\raw\fixed_clip.mp4
 hm_env\Scripts\python.exe -m pitchmap detect    --run data\runs\fixed_clip
-hm_env\Scripts\python.exe -m pitchmap track     --run data\runs\fixed_clip
-hm_env\Scripts\python.exe -m pitchmap annotate  --run data\runs\fixed_clip
 hm_env\Scripts\python.exe -m pitchmap calibrate --run data\runs\fixed_clip
-hm_env\Scripts\python.exe -m pitchmap project   --run data\runs\fixed_clip
+hm_env\Scripts\python.exe -m pitchmap track     --run data\runs\fixed_clip
+hm_env\Scripts\python.exe -m pitchmap team      --run data\runs\fixed_clip
+hm_env\Scripts\python.exe -m pitchmap refine    --run data\runs\fixed_clip
+hm_env\Scripts\python.exe -m pitchmap project   --run data\runs\fixed_clip --smooth
 hm_env\Scripts\python.exe -m pitchmap heatmap   --run data\runs\fixed_clip
-hm_env\Scripts\python.exe -m pitchmap overlay   --run data\runs\fixed_clip --kind calib
+hm_env\Scripts\python.exe -m pitchmap overlay   --run data\runs\fixed_clip --kind track
 ```
 
 Settings live in `configs/default.yaml`; most stages accept flags that override
@@ -63,14 +79,14 @@ the relevant entries for a single run.
 configs/    pipeline settings
 data/       raw clips and per-clip run directories (not tracked)
 docs/notes/ working notes and research links
-models/     detector weights (not tracked)
+models/     model weights (not tracked, see Models)
 scripts/    standalone helper scripts
 src/pitchmap/
   cli/      one thin entrypoint per stage
   io/       video reading, run artifacts, MOT format
-  detect/   detector implementations behind a shared protocol
+  detect/   YOLO player detection
   track/    tracker implementations behind a shared protocol
-  calib/    pitch model, landmark clicking, homography fit and propagation
+  calib/    pitch model, landmark clicking, homography fit
   project/  ground-plane projection
   heat/     heatmap accumulation and rendering
   viz/      sanity overlay videos
@@ -90,10 +106,8 @@ retuned with `--reuse-keypoints` without re-running the model.
 To see boxes drawn on the video while a stage is processing:
 
 ```powershell
-hm_env\Scripts\python.exe -m pitchmap detect --run data
-unsixed_clip --show
-hm_env\Scripts\python.exe -m pitchmap track  --run data
-unsixed_clip --show
+hm_env\Scripts\python.exe -m pitchmap detect --run data\runs\fixed_clip --show
+hm_env\Scripts\python.exe -m pitchmap track  --run data\runs\fixed_clip --show
 ```
 
 Press `q` to stop early; whatever was processed is still saved.
@@ -102,12 +116,9 @@ To replay a finished run without re-running any model, which is much faster and
 can be paused:
 
 ```powershell
-hm_env\Scripts\python.exe -m pitchmap preview --run data
-unsixed_clip --kind track
-hm_env\Scripts\python.exe -m pitchmap preview --run data
-unsixed_clip --kind detect
-hm_env\Scripts\python.exe -m pitchmap preview --run data
-unsixed_clip --kind calib
+hm_env\Scripts\python.exe -m pitchmap preview --run data\runs\fixed_clip --kind track
+hm_env\Scripts\python.exe -m pitchmap preview --run data\runs\fixed_clip --kind detect
+hm_env\Scripts\python.exe -m pitchmap preview --run data\runs\fixed_clip --kind calib
 ```
 
 `space` pauses, `j` and `k` step frame by frame while paused, `q` quits.
@@ -128,8 +139,10 @@ the keypoint model's localisation bias, measured at roughly half a metre.
 
 **2. Tracking overlay** - `data/runs/<clip>/overlays/tracking_check.mp4`.
 Boxes with track ids, plus a pitch minimap inset showing where each tracked
-player was projected. Dots should stay inside the pitch and move smoothly. Track
-ids changing on the same player is the known Part 1 limitation.
+player was projected. Once the team stage has run, boxes and minimap dots are
+drawn in each team's own average kit colour, so a mislabelled player shows up as
+a box whose colour disagrees with the shirt inside it. Watch the id numbers
+across occlusions: they should survive players crossing.
 
 **3. Heatmaps** - `data/runs/<clip>/heatmaps/`. `player_<id>.png` per tracklet,
 `all_tracklets_grid.png` for a contact sheet, `aggregate.png` for all positions.
@@ -140,8 +153,11 @@ Numbers worth checking, printed by the stages themselves:
 | Stage | Healthy on the test clip |
 | --- | --- |
 | `calibrate` | 5499/5500 frames, median residual 0.52 m |
-| `project` | about 86 percent valid, median implied speed under 2 m/s |
-| `heatmap` | 405 tracklets, 64 lasting over 20 s |
+| `track` | 188 tracklets, median about 12 s |
+| `team` | an even A/B split, silhouette above 0.5, a handful of `other` |
+| `refine` | 75 tracklets, 55 over 20 s, median 54 s, coverage 0.83 |
+| `project` | about 88 percent valid, median implied speed under 2 m/s |
+| `heatmap` | about 47 rendered, officials skipped by label |
 
 `project` reports why samples were rejected. `out_of_bounds` is mostly touchline
 staff and substitutes; `teleport` marks jumps faster than a player can run,
@@ -164,9 +180,79 @@ Be careful reading heatmaps until then: on the test clip the longest and
 cleanest tracklet is the referee, not a player. Officials are easier to track
 than players because their kit is distinct and they are rarely occluded.
 
+## Team assignment
+
+Tracklets are clustered into two teams by the median colour of the player torso,
+with pitch-green pixels masked out. Clustering runs in chroma (Lab without
+lightness) when that separates the kits better than full Lab, which it usually
+does: lightness mostly follows shadow and floodlighting rather than kit identity.
+On the test clip chroma scores 0.63 against 0.52 for full Lab.
+
+A tracklet whose distance to the nearer centroid exceeds `other_dist_ratio` of
+the gap between the two centroids belongs to neither team and is labelled
+`other`: referees, goalkeepers and staff. The threshold is relative so it does
+not depend on the feature space or on how contrasting the two kits are. On the
+test clip real players reach 0.48 and officials start at 0.73.
+
+A wrong team colour is usually not a colour problem. It means the tracklet
+contains more than one person, so no single label can be right. Tracklet purity
+- how consistently the rows of a tracklet vote for one team - is therefore the
+metric that matters, and it is what the split threshold was tuned against.
+
+## Tracking
+
+Identity is held by Deep-EIoU (sports-specific association plus OSNet appearance
+embeddings trained on sports footage), then repaired offline: `refine` splits
+tracklets whose embeddings cluster into more than one identity, and reconnects
+fragments that belong to the same person, refusing any merge between tracklets
+confidently assigned to different teams.
+
+Measured on the test clip:
+
+| Stage | Tracklets | Median length |
+| --- | --- | --- |
+| ByteTrack (previous) | 405 | 4.8 s |
+| Deep-EIoU | 188 | 8.1 s |
+| after `refine` | 59 | 62.1 s |
+
+`refine` always works from `tracks_raw.parquet`, so re-running it with different
+parameters is idempotent and never compounds. `track` deletes the refine and
+team artifacts, since new tracks invalidate both.
+
+## Measuring identity quality
+
+Automatic checks on team labels reuse the same jersey colours that produced
+them, so they cannot see a swap between two players of the same team. The
+`review` and `eval` stages add a human-judged measurement that can.
+
+```powershell
+hm_env\Scripts\python.exe -m pitchmap review --run data\runs\fixed_clip
+hm_env\Scripts\python.exe -m pitchmap eval   --run data\runs\fixed_clip
+```
+
+`review` renders each tracklet as a strip of crops spanning its life and writes
+a CSV pre-filled with the pipeline's own guesses. Judging is then reading a few
+images and correcting two columns: set `verdict` to `mixed` where a strip shows
+more than one person, and fix `team` where the label is wrong. `eval` scores the
+result.
+
+Measured on the test clip: 92 percent of tracklets are one person (94 percent by
+duration), and team labels agree with the human on 95 percent of them.
+
+Judgements are keyed to track ids, and refine renumbers those on every run, so
+`review` stores a fingerprint of the tracklets it described and `eval` refuses to
+score against a different set. Re-run `review --overwrite` after changing
+anything upstream.
+
 ## Status
 
-Part 1 produces heatmaps per *tracklet*, not per player: the current tracker
-fragments identities (405 tracklets for about 22 players), so one player may
-span several tracklets. Identity consolidation is the next milestone and is now
-the main accuracy bottleneck.
+Heatmaps are roughly one per player rather than per fragment, and officials are
+excluded by default.
+
+Measured against human judgement of the test clip: 92 percent of tracklets are a
+single person, 95 percent carry the right team label. The three remaining label
+errors are genuinely ambiguous - a dark coat against the navy kit - and are not
+fixable by threshold tuning: accuracy is flat from 0.50 to 1.10.
+
+Remaining gaps: some players still split into two tracklets across the clip, and
+naming tracklets from the team sheet is still a manual step, by design.

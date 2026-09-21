@@ -6,4 +6,10 @@ data/
 models/
 *.mp4
 *.pt
-pyproject.toml
+
+# tests and local check scripts
+tests/
+.pytest_cache/
+test_*.py
+*_test.py
+scripts/check_env.py

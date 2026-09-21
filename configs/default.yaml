@@ -9,17 +9,56 @@ detect:
   device: cuda
 
 track:
-  kind: deepsort
+  kind: deep_eiou
+  # bytetrack only
   conf_min: 0.40
   max_age: 30
   n_init: 3
+  # deep_eiou; values are the upstream demo defaults and tuning starting points
+  track_high_thresh: 0.6
+  track_low_thresh: 0.1
+  new_track_thresh: 0.7
+  track_buffer: 60
+  match_thresh: 0.8
+  proximity_thresh: 0.5
+  appearance_thresh: 0.25
+  min_box_area: 10.0
+  # not wired up yet
+  cmc: false
+
+reid:
+  model_path: models/osnet_sports.pth.tar-60
+  num_classes: 616
+  batch: 64
+  fp16: true
+  device: cuda
+
+refine:
+  use_split: true
+  use_connect: true
+  # upstream gta-link defaults
+  eps: 0.4
+  min_samples: 10
+  max_k: 3
+  min_len_frames: 100
+  spatial_factor: 1.0
+  merge_dist_thres: 0.4
+  use_team_constraint: true
+  min_veto_confidence: 0.35
+  use_speed_constraint: true
+  max_speed_ms: 12.0
+
+team:
+  samples_per_tracklet: 80
+  min_rows: 5
+  min_cluster_track_s: 10.0
+  other_dist_ratio: 0.55
+  min_silhouette: 0.25
 
 calib:
   keyframe_every_s: 10.0
-  min_landmarks: 6
   ransac_reproj_px: 3.0
   drift_warn_m: 1.0
-  drift_fail_m: 2.0
 
 heat:
   cell_m: 0.5

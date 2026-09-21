@@ -14,7 +14,8 @@ from pitchmap.config import load_config, with_overrides
 from pitchmap.io import artifacts, mot
 from pitchmap.io.video import iter_frames
 from pitchmap.track.factory import TRACKER_KINDS, build_tracker
-from pitchmap.viz.overlay import draw_hud, draw_tracks
+from pitchmap.track.metrics import format_summary, fragmentation_summary
+from pitchmap.viz.overlay import draw_hud, draw_tracks, show
 
 WINDOW = "pitchmap track"
 
@@ -43,8 +44,21 @@ def _display(frame, tracks, index: int) -> bool:
         boxes = np.array([[t.x1, t.y1, t.x2, t.y2] for t in tracks])
         canvas = draw_tracks(canvas, boxes, np.array([t.track_id for t in tracks]))
     canvas = draw_hud(canvas, [f"frame {index}  tracks {len(tracks)}"])
-    cv2.imshow(WINDOW, canvas)
-    return (cv2.waitKey(1) & 0xFF) != ord("q")
+    return show(WINDOW, canvas)
+
+
+def _remove_stale_downstream(paths: artifacts.RunPaths) -> None:
+    """New tracks invalidate everything the refine and team stages produced."""
+    stale = [
+        path
+        for path in (paths.tracks_raw, paths.team, paths.team_features)
+        if path.exists()
+    ]
+    for path in stale:
+        path.unlink()
+    if stale:
+        names = ", ".join(path.name for path in stale)
+        print(f"Removed stale downstream artifacts ({names}); re-run team and refine.")
 
 
 def run(args: argparse.Namespace) -> None:
@@ -57,12 +71,13 @@ def run(args: argparse.Namespace) -> None:
     by_frame = {frame: group for frame, group in detections.groupby("frame")}
     stop = int(detections["frame"].max()) + 1
 
-    tracker = build_tracker(config.track)
+    tracker = build_tracker(config, meta.fps)
     print(f"Tracking with {tracker.describe()}")
     if args.show:
         print("Showing tracks. Press q to stop early; work so far is still saved.")
 
     records = []
+    feats: list[np.ndarray | None] = []
     for index, frame in tqdm(iter_frames(meta.path, stop=stop), total=stop, unit="frame"):
         group = by_frame.get(index)
         frame_detections = (
@@ -73,18 +88,19 @@ def run(args: argparse.Namespace) -> None:
         if args.show and not _display(frame, frame_tracks, index):
             break
 
-        records.extend(
-            {
-                "frame": index,
-                "track_id": track.track_id,
-                "x1": track.x1,
-                "y1": track.y1,
-                "x2": track.x2,
-                "y2": track.y2,
-                "conf": track.conf,
-            }
-            for track in frame_tracks
-        )
+        for track in frame_tracks:
+            records.append(
+                {
+                    "frame": index,
+                    "track_id": track.track_id,
+                    "x1": track.x1,
+                    "y1": track.y1,
+                    "x2": track.x2,
+                    "y2": track.y2,
+                    "conf": track.conf,
+                }
+            )
+            feats.append(track.feat)
 
     if args.show:
         cv2.destroyWindow(WINDOW)
@@ -92,22 +108,31 @@ def run(args: argparse.Namespace) -> None:
     table = pd.DataFrame.from_records(records)
     artifacts.write_table(table, paths.tracks)
     mot.write_mot(table, paths.tracks_mot)
+    _remove_stale_downstream(paths)
+    _save_embeddings(paths, table, feats)
 
-    lengths = table.groupby("track_id").size() / meta.fps
-    long_tracks = int((lengths >= config.heat.min_track_s).sum())
-    artifacts.record_stage(
-        paths,
-        "track",
-        {
-            "tracker": tracker.describe(),
-            "tracks": int(table["track_id"].nunique()),
-            "long_tracks": long_tracks,
-        },
-    )
+    summary = fragmentation_summary(table, meta.fps, stop)
+    artifacts.record_stage(paths, "track", {"tracker": tracker.describe(), **summary})
 
-    print(f"Wrote {len(table)} track rows over {int(table['track_id'].nunique())} track ids")
-    print(
-        f"Tracks lasting at least {config.heat.min_track_s:.0f} s: {long_tracks} "
-        f"(median length {lengths.median():.1f} s)"
-    )
+    print(format_summary(summary))
     print(f"Artifacts: {paths.tracks}, {paths.tracks_mot}")
+
+
+def _save_embeddings(
+    paths: artifacts.RunPaths,
+    table: pd.DataFrame,
+    feats: list[np.ndarray | None],
+) -> None:
+    if not feats or any(feat is None for feat in feats):
+        if paths.embeddings.exists():
+            paths.embeddings.unlink()
+            print("Removed stale embeddings.npz (backend produced no embeddings).")
+        return
+
+    artifacts.write_embeddings(
+        paths,
+        np.stack(feats),
+        table["frame"].to_numpy(),
+        table["track_id"].to_numpy(),
+    )
+    print(f"Cached {len(feats)} appearance embeddings: {paths.embeddings}")

@@ -83,34 +83,6 @@ def fit_keyframe(
     return fit_points(image_points, pitch_points, names, ransac_reproj_px)
 
 
-def holdout_errors_m(
-    clicks: dict[str, tuple[float, float]],
-    pitch: PitchConfig,
-    ransac_reproj_px: float = 3.0,
-) -> dict[str, float]:
-    """Leave-one-out error per landmark: refit without it, then measure it.
-
-    Unlike the in-fit residuals this cannot be driven to zero by overfitting, so
-    it is the honest accuracy number for a keyframe.
-    """
-    catalogue = landmarks(pitch)
-    usable = {name: point for name, point in clicks.items() if name in catalogue}
-    if len(usable) <= MIN_POINTS:
-        return {}
-
-    errors: dict[str, float] = {}
-    for held_out in usable:
-        subset = {name: point for name, point in usable.items() if name != held_out}
-        try:
-            fit = fit_keyframe(subset, pitch, ransac_reproj_px)
-        except ValueError:
-            continue
-        predicted = apply(fit.matrix, np.array([usable[held_out]], dtype=np.float64))[0]
-        errors[held_out] = float(np.linalg.norm(predicted - np.array(catalogue[held_out])))
-
-    return errors
-
-
 def is_plausible(matrix: np.ndarray, width: int, height: int, pitch: PitchConfig) -> bool:
     """Reject homographies that fold, mirror, or degenerate.
 

@@ -14,7 +14,6 @@ from pitchmap.calib.homography import apply
 from pitchmap.config import PitchConfig
 
 OUT_OF_BOUNDS_MARGIN_M = 3.0
-MAX_SPEED_MS = 12.0
 VALID = ""
 REASON_NO_HOMOGRAPHY = "no_homography"
 REASON_OUT_OF_BOUNDS = "out_of_bounds"
@@ -33,6 +32,7 @@ def project_tracks(
     source: np.ndarray,
     pitch: PitchConfig,
     fps: float,
+    max_speed_ms: float,
 ) -> pd.DataFrame:
     """Project every tracked box to pitch metres and flag implausible results."""
     points = foot_points(tracks)
@@ -54,10 +54,12 @@ def project_tracks(
         }
     ).sort_values(["track_id", "frame"], ignore_index=True)
 
-    return _flag(projected, pitch, fps)
+    return _flag(projected, pitch, fps, max_speed_ms)
 
 
-def _flag(projected: pd.DataFrame, pitch: PitchConfig, fps: float) -> pd.DataFrame:
+def _flag(
+    projected: pd.DataFrame, pitch: PitchConfig, fps: float, max_speed_ms: float
+) -> pd.DataFrame:
     reason = np.where(
         projected[["x_m", "y_m"]].isna().any(axis=1), REASON_NO_HOMOGRAPHY, VALID
     ).astype(object)
@@ -71,7 +73,7 @@ def _flag(projected: pd.DataFrame, pitch: PitchConfig, fps: float) -> pd.DataFra
     reason[(reason == VALID) & outside] = REASON_OUT_OF_BOUNDS
 
     speed = _speeds(projected, reason == VALID, fps)
-    reason[(reason == VALID) & (speed > MAX_SPEED_MS)] = REASON_TELEPORT
+    reason[(reason == VALID) & (speed > max_speed_ms)] = REASON_TELEPORT
 
     return projected.assign(valid=reason == VALID, invalid_reason=reason)
 

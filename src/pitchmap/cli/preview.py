@@ -14,7 +14,7 @@ import cv2
 from pitchmap.config import load_config
 from pitchmap.io import artifacts
 from pitchmap.io.video import iter_frames
-from pitchmap.viz import overlay
+from pitchmap.viz import overlay, teams
 
 WINDOW = "pitchmap preview"
 KEY_QUIT = ord("q")
@@ -60,6 +60,11 @@ def run(args: argparse.Namespace) -> None:
     calibration = (
         artifacts.read_homographies(paths) if args.kind == "calib" else None
     )
+    colours = (
+        teams.load_track_colours(paths, artifacts.read_table(paths.tracks))
+        if args.kind == "track"
+        else None
+    )
 
     stop = min(meta.n_frames, args.start + args.limit) if args.limit else meta.n_frames
     delay = _delay_ms(meta.fps, args.speed)
@@ -71,7 +76,9 @@ def run(args: argparse.Namespace) -> None:
 
     try:
         for index, frame in iter_frames(meta.path, start=args.start, stop=stop):
-            canvas = _draw(frame, index, args, config, boxes, positions, calibration)
+            canvas = _draw(
+                frame, index, args, config, meta.fps, boxes, positions, calibration, colours
+            )
             cv2.imshow(WINDOW, canvas)
 
             key = cv2.waitKey(0 if paused else delay) & 0xFF
@@ -104,16 +111,14 @@ def _load_positions(paths, disabled: bool):
     return {frame: group for frame, group in table.groupby("frame")}
 
 
-def _draw(frame, index, args, config, boxes, positions, calibration):
+def _draw(frame, index, args, config, fps, boxes, positions, calibration, colours=None):
     canvas = frame.copy()
     group = boxes.get(index)
 
     if args.kind == "calib" and calibration is not None:
         if calibration["source"][index] != "missing":
             colour = overlay.line_colour(
-                str(calibration["source"][index]),
-                calibration["drift_m"][index],
-                config.calib.drift_warn_m,
+                calibration["drift_m"][index], config.calib.drift_warn_m
             )
             canvas = overlay.draw_pitch_lines(
                 canvas, calibration["matrices"][index], config.pitch, colour
@@ -121,20 +126,13 @@ def _draw(frame, index, args, config, boxes, positions, calibration):
     elif group is not None:
         xyxy = group[["x1", "y1", "x2", "y2"]].to_numpy()
         if args.kind == "track":
-            canvas = overlay.draw_tracks(canvas, xyxy, group["track_id"].to_numpy())
+            canvas = overlay.draw_tracks(canvas, xyxy, group["track_id"].to_numpy(), colours)
         else:
-            for x1, y1, x2, y2 in xyxy.astype(int):
-                cv2.rectangle(canvas, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            canvas = overlay.draw_boxes(canvas, xyxy)
 
-    projected = positions.get(index)
-    if projected is not None:
-        valid = projected[projected["valid"]]
-        panel = overlay.minimap(
-            config.pitch, valid[["x_m", "y_m"]].to_numpy(), valid["track_id"].to_numpy()
-        )
-        canvas = overlay.inset(canvas, panel)
+    canvas = overlay.with_minimap(canvas, config.pitch, positions.get(index), colours)
 
     count = 0 if group is None else len(group)
     label = "detections" if args.kind == "detect" else args.kind
-    seconds = index / 25.0
+    seconds = index / fps
     return overlay.draw_hud(canvas, [f"frame {index}  ({seconds:.1f}s)  {label} {count}"])

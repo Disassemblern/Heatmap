@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-from pitchmap.config import TrackConfig
+from pitchmap.config import Config
 from pitchmap.track.base import Tracker
 from pitchmap.track.bytetrack import ByteTracker
-from pitchmap.track.deepsort import DeepSortTracker
+from pitchmap.track.deep_eiou import DeepEiouTracker
 
-TRACKER_KINDS = ("deepsort", "bytetrack")
+TRACKER_KINDS = ("deep_eiou", "bytetrack")
 
 
-def build_tracker(config: TrackConfig) -> Tracker:
-    if config.kind == "deepsort":
-        return DeepSortTracker(config)
-    if config.kind == "bytetrack":
-        return ByteTracker(config)
-    raise ValueError(f"Unknown tracker kind: {config.kind}. Expected one of {TRACKER_KINDS}.")
+def build_tracker(config: Config, fps: float) -> Tracker:
+    kind = config.track.kind
+    if kind == "deep_eiou":
+        return DeepEiouTracker(config.track, config.reid, fps)
+    if kind == "bytetrack":
+        return ByteTracker(config.track)
+    raise ValueError(f"Unknown tracker kind: {kind}. Expected one of {TRACKER_KINDS}.")

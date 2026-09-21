@@ -10,7 +10,7 @@ from tqdm import tqdm
 from pitchmap.config import load_config
 from pitchmap.io import artifacts
 from pitchmap.io.video import iter_frames
-from pitchmap.viz import overlay
+from pitchmap.viz import overlay, teams
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -47,7 +47,7 @@ def _render_calibration(paths, meta, config, stop: int) -> None:
                 video.write(overlay.draw_hud(frame.copy(), [f"frame {index}", "no homography"]))
                 continue
 
-            colour = overlay.line_colour(str(source[index]), drift[index], config.calib.drift_warn_m)
+            colour = overlay.line_colour(drift[index], config.calib.drift_warn_m)
             canvas = overlay.draw_pitch_lines(frame, matrices[index], config.pitch, colour)
             drift_text = f"{drift[index]:.2f} m" if np.isfinite(drift[index]) else "n/a"
             video.write(
@@ -75,6 +75,10 @@ def _render_tracking(paths, meta, config, stop: int) -> None:
         else {}
     )
 
+    colours = teams.load_track_colours(paths, tracks)
+    if colours is not None:
+        print("Colouring boxes by team label.")
+
     output = paths.overlays_dir / "tracking_check.mp4"
     video = overlay.writer(output, meta.fps, meta.width, meta.height)
 
@@ -89,17 +93,12 @@ def _render_tracking(paths, meta, config, stop: int) -> None:
                     canvas,
                     group[["x1", "y1", "x2", "y2"]].to_numpy(),
                     group["track_id"].to_numpy(),
+                    colours,
                 )
 
-            projected = positions_by_frame.get(index)
-            if projected is not None:
-                valid = projected[projected["valid"]]
-                panel = overlay.minimap(
-                    config.pitch,
-                    valid[["x_m", "y_m"]].to_numpy(),
-                    valid["track_id"].to_numpy(),
-                )
-                canvas = overlay.inset(canvas, panel)
+            canvas = overlay.with_minimap(
+                canvas, config.pitch, positions_by_frame.get(index), colours
+            )
 
             count = 0 if group is None else len(group)
             video.write(overlay.draw_hud(canvas, [f"frame {index}  tracks {count}"]))

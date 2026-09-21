@@ -27,7 +27,12 @@ def run(args: argparse.Namespace) -> None:
     calibration = artifacts.read_homographies(paths)
 
     positions = ground.project_tracks(
-        tracks, calibration["matrices"], calibration["source"], config.pitch, meta.fps
+        tracks,
+        calibration["matrices"],
+        calibration["source"],
+        config.pitch,
+        meta.fps,
+        config.refine.max_speed_ms,
     )
     if args.smooth:
         positions = ground.smooth_positions(positions)
