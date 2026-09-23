@@ -19,6 +19,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "--min-seconds", type=float, default=None, help="Skip tracklets shorter than this"
     )
     parser.add_argument(
+        "--sigma",
+        type=float,
+        default=None,
+        help="Smoothing kernel in metres; larger spreads each position further",
+    )
+    parser.add_argument(
         "--top", type=int, default=12, help="How many tracklets to place on the contact sheet"
     )
     parser.add_argument(
@@ -50,7 +56,12 @@ def _drop_officials(paths, kept):
 
 
 def run(args: argparse.Namespace) -> None:
-    config = with_overrides(load_config(args.config), "heat", min_track_s=args.min_seconds)
+    config = with_overrides(
+        load_config(args.config),
+        "heat",
+        min_track_s=args.min_seconds,
+        sigma_m=args.sigma,
+    )
     paths = artifacts.run_paths(args.run)
     meta = artifacts.video_meta(paths)
     positions = artifacts.read_table(paths.positions)
@@ -76,6 +87,11 @@ def run(args: argparse.Namespace) -> None:
         f"{len(summary)} tracklets total, {len(kept)} last at least "
         f"{config.heat.min_track_s:.0f} s"
     )
+
+    # refine renumbers ids on every run, so a leftover player_<id>.png from an
+    # earlier run would show a different person under the same name.
+    for stale in paths.heatmaps_dir.glob("player_*.png"):
+        stale.unlink()
 
     entries = []
     for row in kept.itertuples():

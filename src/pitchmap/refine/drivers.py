@@ -38,13 +38,16 @@ VETO_DISTANCE = 1.0
 TeamLabels = dict[int, tuple[str, float]]
 
 
-def split_pass(tracklet_set: TrackletSet, config: RefineConfig) -> TrackletSet:
+def split_pass(tracklet_set: TrackletSet, config: RefineConfig, fps: float) -> TrackletSet:
     """Split tracklets whose embeddings cluster into several identities.
 
     Mirrors the vendored split_tracklets loop: short tracklets pass through,
     long ones are tested with DBSCAN over their per-detection embeddings, and a
-    detected switch partitions the tracklet's rows by cluster label.
+    detected switch partitions the tracklet's rows by cluster label - after the
+    labels are made contiguous in time, so a split is a change point rather than
+    frame-by-frame alternation.
     """
+    min_run = int(round(config.min_split_s * fps))
     next_id = max(tracklet_set.tracklets) + 1
     tracklets: dict[int, Tracklet] = {}
     rows: dict[int, list[int]] = {}
@@ -59,6 +62,10 @@ def split_pass(tracklet_set: TrackletSet, config: RefineConfig) -> TrackletSet:
             continue
 
         labels = _switch_labels(tracklet.features, config)
+        if labels is not None and min_run > 1:
+            labels = _contiguous(labels, min_run)
+            if len(np.unique(labels)) < 2:
+                labels = None
         if labels is None:
             tracklets[track_id] = tracklet
             rows[track_id] = track_rows
@@ -97,6 +104,37 @@ def _switch_labels(features: list[np.ndarray], config: RefineConfig) -> np.ndarr
         np.round(np.arange(len(features)) / stride).astype(int), 0, len(sampled) - 1
     )
     return np.asarray(sampled_labels)[nearest]
+
+
+def _contiguous(labels: np.ndarray, min_run: int) -> np.ndarray:
+    """Turn per-row cluster labels into runs of at least min_run rows.
+
+    A real identity switch is sustained: the tracker moved to another person
+    and stayed there. Pose and motion blur instead make labels alternate within
+    a fraction of a second. A sliding majority vote removes the alternation,
+    then any run still shorter than min_run is absorbed into its longer
+    neighbour. Rows stand in for frames here; a raw tracklet covers nearly
+    every frame of its span.
+    """
+    labels = np.asarray(labels).copy()
+    half = min_run // 2
+    voted = labels.copy()
+    for i in range(len(labels)):
+        values, counts = np.unique(labels[max(0, i - half) : i + half + 1], return_counts=True)
+        voted[i] = values[counts.argmax()]
+
+    while True:
+        edges = np.flatnonzero(np.diff(voted)) + 1
+        starts = np.r_[0, edges]
+        ends = np.r_[edges, len(voted)]
+        lengths = ends - starts
+        if len(lengths) == 1 or lengths.min() >= min_run:
+            return voted
+        k = int(lengths.argmin())
+        left = lengths[k - 1] if k > 0 else -1
+        right = lengths[k + 1] if k + 1 < len(lengths) else -1
+        neighbour = starts[k - 1] if left >= right else starts[k + 1]
+        voted[starts[k] : ends[k]] = voted[neighbour]
 
 
 def _subset(tracklet: Tracklet, new_id: int, member: np.ndarray) -> Tracklet:

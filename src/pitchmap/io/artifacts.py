@@ -131,6 +131,11 @@ def create_run(video_path: Path | str, meta: VideoMeta) -> RunPaths:
 
 
 def read_meta(paths: RunPaths) -> dict[str, Any]:
+    if not paths.meta.exists():
+        raise SystemExit(
+            f"No run at {paths.root} ({paths.meta.name} is missing). "
+            "Check the clip name, or create the run with init-run first."
+        )
     return json.loads(paths.meta.read_text(encoding="utf-8"))
 
 

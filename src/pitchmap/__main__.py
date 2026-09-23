@@ -9,6 +9,8 @@ from collections.abc import Callable
 from pitchmap.cli import (
     annotate,
     calibrate,
+    combine,
+    cut,
     detect,
     eval as eval_stage,
     heatmap,
@@ -23,6 +25,7 @@ from pitchmap.cli import (
 )
 
 STAGES: dict[str, tuple[Callable[[argparse.ArgumentParser], None], Callable[[argparse.Namespace], None], str]] = {
+    "cut": (cut.add_arguments, cut.run, "Cut a long recording into shorter clips"),
     "init-run": (init_run.add_arguments, init_run.run, "Create a run directory for a clip"),
     "detect": (detect.add_arguments, detect.run, "Detect players in every frame"),
     "track": (track.add_arguments, track.run, "Assign track ids across frames"),
@@ -34,6 +37,7 @@ STAGES: dict[str, tuple[Callable[[argparse.ArgumentParser], None], Callable[[arg
     "heatmap": (heatmap.add_arguments, heatmap.run, "Render per-tracklet heatmaps"),
     "review": (review.add_arguments, review.run, "Render tracklet sheets for human judgement"),
     "eval": (eval_stage.add_arguments, eval_stage.run, "Score identity against human judgements"),
+    "combine": (combine.add_arguments, combine.run, "One heatmap per named player across runs"),
     "overlay": (overlay.add_arguments, overlay.run, "Render calibration or tracking sanity videos"),
     "preview": (preview.add_arguments, preview.run, "Play the clip in a window with results drawn"),
 }

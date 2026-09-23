@@ -23,6 +23,7 @@ video -> detect -> calibrate -> track -> team -> refine -> project -> heatmap
 
 | Stage | Output | Purpose |
 | --- | --- | --- |
+| `cut` | `data/raw/<clip>_p01.mp4`, ... | Optional: split a long recording into clips processed one at a time |
 | `detect` | `detections.parquet` | Per-frame player boxes, stored at a low confidence floor |
 | `track` | `tracks.parquet`, `tracks_mot.txt`, `embeddings.npz` | Track ids across frames, with appearance embeddings |
 | `team` | `team.parquet`, `team_features.npz` | Tracklets clustered into two teams by jersey colour |
@@ -32,6 +33,7 @@ video -> detect -> calibrate -> track -> team -> refine -> project -> heatmap
 | `project` | `positions.parquet` | Foot points projected into pitch metres |
 | `heatmap` | `heatmaps/*.png` | Per-tracklet occupancy maps on a pitch |
 | `overlay` | `overlays/*.mp4` | Calibration and tracking sanity videos |
+| `combine` | a directory of `player_<name>.png` | One heatmap per named player, pooled across several runs |
 
 ## Setup
 
@@ -49,12 +51,23 @@ Three weight files belong in `models/`, which is not tracked:
 
 | File | Used by | What it is | Licence |
 | --- | --- | --- | --- |
-| `yolov8m.pt` | `detect` | Ultralytics YOLOv8m, COCO `person` class | AGPL-3.0 |
+| `yolo-football-player-detection.pt` | `detect` | YOLO11m, classes player / goalkeeper / referee / ball | AGPL-3.0 |
 | `yolo-football-pitch-detection.pt` | `calibrate` | YOLOv8x-pose fine-tuned for 32 pitch keypoints | AGPL-3.0 |
 | `osnet_sports.pth.tar-60` | `track` (deep_eiou), `refine` | OSNet ReID trained on SportsMOT, 616 identities | none published |
 
-`yolov8m.pt` downloads itself on first run. The other two are manual, and
-`calibrate`, `track` and `refine` all fail without them.
+None of the three download themselves, and `detect`, `calibrate`, `track` and
+`refine` all fail without them.
+
+**Players** - [martinjolif/yolo-football-player-detection](https://huggingface.co/martinjolif/yolo-football-player-detection)
+on Hugging Face. A football-specific detector rather than a general one matters
+more than it sounds: a COCO `person` model separates players from crowd,
+coaches and substitutes only by confidence, and that does not work on a wide
+broadcast frame. This one separates them by class. Reported mAP50 is 0.9937 for
+players and 0.9888 for referees.
+
+```powershell
+curl.exe -L -o models\yolo-football-player-detection.pt https://huggingface.co/martinjolif/yolo-football-player-detection/resolve/main/yolo-football-player-detection.pt
+```
 
 **Pitch keypoints** - [martinjolif/yolo-football-pitch-detection](https://huggingface.co/martinjolif/yolo-football-pitch-detection)
 on Hugging Face. The keypoint index to pitch-metre mapping this repo fits
@@ -91,6 +104,62 @@ hm_env\Scripts\python.exe -m pitchmap overlay   --run data\runs\fixed_clip --kin
 
 Settings live in `configs/default.yaml`; most stages accept flags that override
 the relevant entries for a single run.
+
+## Working through a full half
+
+A 45-minute half takes about 4.5 hours on an RTX 3050 Laptop GPU, and one bad
+setting means redoing all of it. Cutting it into 5-minute clips lets you check
+each piece before moving on, and each piece is just an ordinary clip:
+
+```powershell
+hm_env\Scripts\python.exe -m pitchmap cut --video data\raw\half1.mp4 --every 5
+```
+
+That writes `half1_p01.mp4`, `half1_p02.mp4`, ... next to the recording and
+prints the time range each one covers. For a single range instead, use
+`--start 10:00 --end 15:00`. The video stream is copied, not re-encoded, so it
+is instant and the detector sees identical pixels; cuts land on the nearest
+keyframe, within a second or two of the requested time.
+
+Then, per clip:
+
+```powershell
+$clip = "half1_p01"
+& {
+    function pm { hm_env\Scripts\python.exe -m pitchmap @args; if ($LASTEXITCODE) { throw "pitchmap $args failed" } }
+    pm init-run  --video data\raw\$clip.mp4
+    pm detect    --run data\runs\$clip
+    pm calibrate --run data\runs\$clip
+    pm track     --run data\runs\$clip
+    pm team      --run data\runs\$clip
+    pm refine    --run data\runs\$clip
+    pm project   --run data\runs\$clip --smooth
+    pm heatmap   --run data\runs\$clip
+    pm review    --run data\runs\$clip
+}
+```
+
+The block stops at the first stage that fails, so later stages never run on
+missing files. A 5-minute clip takes about 30 minutes.
+
+Check it with `preview --kind track`, then open `data\runs\<clip>\review.csv`
+next to the contact sheets in `review\` and type a name or shirt number in the
+`player` column for each tracklet you recognise. Blank rows are skipped; set
+`verdict` to `mixed` for any strip that shows two different people.
+
+Track ids are numbered from scratch in every run, so id 5 in one clip has
+nothing to do with id 5 in the next. The names are what link the clips:
+
+```powershell
+hm_env\Scripts\python.exe -m pitchmap combine --out data\combined\half1 `
+    --runs data\runs\half1_p01 data\runs\half1_p02 data\runs\half1_p03
+```
+
+`combine` pools the positions of every tracklet with the same name (case does
+not matter) and draws one heatmap per player, so each clip counts in proportion
+to how long the player was seen in it. It refuses a run whose `review.csv` was
+written against different tracklets, which happens whenever `refine` re-runs.
+Pool one half at a time: teams change ends at half time.
 
 ## Layout
 
@@ -170,12 +239,19 @@ Numbers worth checking, printed by the stages themselves:
 
 | Stage | Healthy on the test clip |
 | --- | --- |
+| `detect` | about 28 per frame: 23 player, 2.4 referee, 1.2 ball, 1.0 goalkeeper |
 | `calibrate` | 5499/5500 frames, median residual 0.52 m |
-| `track` | 188 tracklets, median 8.1 s, coverage 0.83 |
-| `team` | fitted on 88 of 188, an even A/B split (50/48), 38 `other` |
-| `refine` | 82 tracklets, 61 over 20 s, median 40 s, coverage 0.83 |
-| `project` | about 88 percent valid, median implied speed under 2 m/s |
-| `heatmap` | 50 rendered of 82, officials and touchline staff skipped |
+| `track` | 255 raw tracklets, coverage 0.97 |
+| `team` | an even A/B split (30/20 after refine), silhouette above 0.5 |
+| `refine` | 62 tracklets, 40 over 20 s averaging 112 s, coverage 0.97 |
+| `project` | about 89 percent valid, median implied speed under 2 m/s |
+| `heatmap` | 35 rendered of 62, officials and touchline staff skipped |
+
+Read `track`'s raw tracklet count with care: most of those 255 are single-frame
+specks holding 0.3 percent of the rows between them, so the median length is a
+meaningless statistic on that table. What matters is coverage, and how much data
+ends up in tracklets long enough to use - after `refine`, 96 percent of valid
+positions sit in the 40 tracklets lasting 20 s or more.
 
 Every stage records what it actually ran with in `data/runs/<clip>/meta.json`,
 under its own entry. The `config` it stamps there lists only what differed from
@@ -187,20 +263,29 @@ which usually means the tracker swapped identities.
 
 ## Non-players
 
-Detection runs at a low confidence floor to catch every player, so it also picks
-up coaches, substitutes, officials and crowd. Filtering happens downstream:
+The detector classifies rather than just locating, so most of this is settled
+before tracking starts:
 
-- Crowd flickers disappear with the minimum tracklet length.
-- Coaches and touchline staff are dropped by the on-pitch median test in the
+- **Referees** are their own class. `track` keeps only the classes in
+  `track.classes` (player and goalkeeper by default) and skips the rest, so an
+  official never becomes a tracklet. This used to be the worst trap in the
+  pipeline: the longest, cleanest tracklet on the test clip was the referee, not
+  a player, because officials wear distinct kit and are rarely occluded.
+- **Crowd** is not a class the model has, so it is largely not detected at all.
+  Whatever leaks through disappears with the minimum tracklet length.
+- **Coaches and touchline staff** are dropped by the on-pitch median test in the
   heatmap stage. Pass `--keep-off-pitch` to see them.
-- Referees and assistants survive both tests, because they really are on the
-  pitch and moving like players. Separating them needs appearance rather than
-  geometry, which arrives with team-colour clustering and a detector that has a
-  referee class.
+- **Substitutes** are the remaining hard case. The model calls a warming-up
+  substitute a player, correctly, and their training bib is neither team's kit,
+  so they land in the `other` colour cluster rather than being excluded by class.
 
-Be careful reading heatmaps until then: on the test clip the longest and
-cleanest tracklet is the referee, not a player. Officials are easier to track
-than players because their kit is distinct and they are rarely occluded.
+Detection still runs at a low confidence floor and stores every class, including
+the referees and the ball it was told not to track. Changing your mind about
+referees therefore costs a `track` re-run, not a `detect` re-run:
+
+```powershell
+hm_env\Scripts\python.exe -m pitchmap track --run data\runs\fixed_clip --classes player goalkeeper referee
+```
 
 ## Team assignment
 
@@ -231,11 +316,27 @@ confidently assigned to different teams.
 
 Measured on the test clip:
 
-| Stage | Tracklets | Median length |
-| --- | --- | --- |
-| ByteTrack (previous) | 405 | 4.8 s |
-| Deep-EIoU | 188 | 8.1 s |
-| after `refine` | 82 | 40.2 s |
+| Setup | Tracklets >= 20 s | Mean length of those | Coverage |
+| --- | --- | --- | --- |
+| COCO `person` detections | 61 | 66 s | 0.83 |
+| football detections | 51 | 88 s | 0.97 |
+| football detections, 1 s split rule | 40 | 112 s | 0.97 |
+
+The same 19 players' worth of data ends up in fewer, longer pieces: about 2.1
+tracklets per player on the test clip.
+
+The split rule matters more than its size suggests. `refine` finds identity
+switches by clustering a tracklet's appearance embeddings, and it used to assign
+each frame to a cluster on its own. One player's embedding wobbles with pose,
+motion blur and shadow, so neighbouring frames alternated between two clusters
+and the player became two ids flickering back and forth, even with nobody near
+them. A real switch is sustained - the tracker moved to someone else and stayed
+there - so a split now has to hold for `refine.min_split_s` (1 s): labels are
+majority-voted over that window and shorter runs are absorbed. For players in
+open space, frame-to-frame id switches fell from 3.67 to 0.28 percent, and
+tracklets stayed as pure. Most switches left happen where players overlap, which
+no appearance model can fully resolve. `refine --min-split 0` restores the old
+behaviour for comparison.
 
 `refine` always works from `tracks_raw.parquet`, so re-running it with different
 parameters is idempotent and never compounds. `track` deletes the refine and
@@ -258,9 +359,10 @@ images and correcting two columns: set `verdict` to `mixed` where a strip shows
 more than one person, and fix `team` where the label is wrong. `eval` scores the
 result.
 
-Measured on the test clip, over the 61 tracklets long enough to judge: 92
-percent are one person (94 percent by duration), and team labels agree with the
-human on 95 percent of the 56 that carry one.
+With the earlier COCO `person` detector, human judgement of the test clip found
+92 percent of tracklets to be one person and 95 percent of team labels right.
+The detector and the split rule have both changed since, so those numbers are
+unverified until the current contact sheets are judged again.
 
 Judgements are keyed to track ids, and refine renumbers those on every run, so
 `review` stores a fingerprint of the tracklets it described and `eval` refuses to
@@ -269,13 +371,16 @@ anything upstream.
 
 ## Status
 
-Heatmaps are roughly one per player rather than per fragment, and officials are
-excluded by default.
+Per clip, each player is covered by about two tracklets, and officials are
+excluded by class before tracking. Naming tracklets in `review.csv` turns those
+into exactly one heatmap per player, within a clip or pooled across a half with
+`combine`.
 
-Measured against human judgement of the test clip: 92 percent of tracklets are a
-single person, 95 percent carry the right team label. The three remaining label
-errors are genuinely ambiguous - a dark coat against the navy kit - and are not
-fixable by threshold tuning: accuracy is flat from 0.50 to 1.10.
+Remaining gaps:
 
-Remaining gaps: some players still split into two tracklets across the clip, and
-naming tracklets from the team sheet is still a manual step, by design.
+- Identity still breaks where players overlap: 3.4 percent of frame-to-frame
+  pairs there, against 0.28 percent in open space. Two players in the same kit
+  crossing is the case no appearance model can settle.
+- Naming is manual, by design: a person recognises a shirt number in seconds,
+  and nothing automatic can link two fragments of the same player reliably.
+- Human-judged accuracy has not been re-measured since the detector changed.

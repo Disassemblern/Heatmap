@@ -19,7 +19,7 @@ class PitchConfig:
 
 @dataclass(frozen=True)
 class DetectConfig:
-    model_path: str = "models/yolov8m.pt"
+    model_path: str = "models/yolo-football-player-detection.pt"
     conf_store: float = 0.10
     imgsz: int = 1280
     device: str = "cuda"
@@ -28,6 +28,10 @@ class DetectConfig:
 @dataclass(frozen=True)
 class TrackConfig:
     kind: str = "deep_eiou"
+    # Detected classes worth tracking. Everything the detector saw is stored, so
+    # changing this costs a track re-run, not a detect re-run. Referees and the
+    # ball are detected and left out here on purpose.
+    classes: tuple[str, ...] = ("player", "goalkeeper")
     # bytetrack only
     conf_min: float = 0.40
     max_age: int = 30
@@ -44,6 +48,9 @@ class TrackConfig:
     # Camera motion compensation. The vendored tracker has multi_gmc, but nothing
     # reads this flag yet.
     cmc: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "classes", tuple(self.classes))
 
 
 @dataclass(frozen=True)
@@ -65,6 +72,13 @@ class RefineConfig:
     eps: float = 0.4
     min_samples: int = 10
     max_k: int = 3
+    # A split must hold for at least this long. DBSCAN labels each frame on its
+    # own, and one player's appearance wobbles enough with pose and blur that
+    # neighbouring frames alternate between clusters; splitting on that turns
+    # one player into two ids flickering in open field. Measured on the test
+    # clip, 1 s cut open-field id switches from 3.67% to 0.28% while tracklets
+    # stayed as pure. 0 restores per-frame splitting.
+    min_split_s: float = 1.0
     min_len_frames: int = 100
     spatial_factor: float = 1.0
     merge_dist_thres: float = 0.4
@@ -101,7 +115,10 @@ class CalibConfig:
 @dataclass(frozen=True)
 class HeatConfig:
     cell_m: float = 0.5
-    sigma_m: float = 2.0
+    # Gaussian kernel for the occupancy density. Small values draw the path the
+    # player walked; a few metres reads as the territory they covered, which is
+    # what a match heatmap shows.
+    sigma_m: float = 4.0
     min_track_s: float = 10.0
 
 

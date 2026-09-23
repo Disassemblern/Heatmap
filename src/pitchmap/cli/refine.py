@@ -31,6 +31,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--merge-dist", type=float, default=None, help="Override the merge distance threshold"
     )
+    parser.add_argument(
+        "--min-split",
+        type=float,
+        default=None,
+        help="Seconds a split must hold (0 splits frame by frame, the old behaviour)",
+    )
 
 
 def _load_raw(paths: artifacts.RunPaths):
@@ -138,6 +144,7 @@ def run(args: argparse.Namespace) -> None:
         use_team_constraint=False if args.no_team_constraint else None,
         eps=args.eps,
         merge_dist_thres=args.merge_dist,
+        min_split_s=args.min_split,
     )
     refine = config.refine
     if not refine.use_split and not refine.use_connect:
@@ -153,7 +160,7 @@ def run(args: argparse.Namespace) -> None:
     print(f"Refining {n_input} tracklets from {paths.tracks_raw.name}")
 
     if refine.use_split:
-        tracklet_set = drivers.split_pass(tracklet_set, refine)
+        tracklet_set = drivers.split_pass(tracklet_set, refine, meta.fps)
         print(f"After split: {len(tracklet_set.tracklets)} tracklets")
     n_split = len(tracklet_set.tracklets)
 
@@ -198,6 +205,7 @@ def run(args: argparse.Namespace) -> None:
             "use_connect": refine.use_connect,
             "use_team_constraint": refine.use_team_constraint,
             "eps": refine.eps,
+            "min_split_s": refine.min_split_s,
             "merge_dist_thres": refine.merge_dist_thres,
             **summary,
         },

@@ -3,13 +3,15 @@ pitch:
   width_m: 68.0
 
 detect:
-  model_path: models/yolov8m.pt
+  model_path: models/yolo-football-player-detection.pt
   conf_store: 0.10
   imgsz: 1280
   device: cuda
 
 track:
   kind: deep_eiou
+  # detected classes worth tracking; referee and ball are detected but skipped
+  classes: [player, goalkeeper]
   # bytetrack only
   conf_min: 0.40
   max_age: 30
@@ -40,6 +42,8 @@ refine:
   eps: 0.4
   min_samples: 10
   max_k: 3
+  # a split must hold this long; stops pose/blur noise flickering one player between two ids
+  min_split_s: 1.0
   min_len_frames: 100
   spatial_factor: 1.0
   merge_dist_thres: 0.4
@@ -62,5 +66,5 @@ calib:
 
 heat:
   cell_m: 0.5
-  sigma_m: 2.0
+  sigma_m: 4.0
   min_track_s: 10.0

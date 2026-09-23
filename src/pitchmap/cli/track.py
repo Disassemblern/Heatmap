@@ -25,6 +25,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--tracker", choices=TRACKER_KINDS, default=None, help="Tracker backend")
     parser.add_argument("--conf", type=float, default=None, help="Override the tracker confidence")
     parser.add_argument(
+        "--classes",
+        nargs="+",
+        default=None,
+        help="Detected classes to track (default: player goalkeeper)",
+    )
+    parser.add_argument(
         "--show", action="store_true", help="Display tracks in a window while running"
     )
 
@@ -33,8 +39,30 @@ def _detections_for_frame(group: pd.DataFrame) -> sv.Detections:
     return sv.Detections(
         xyxy=group[["x1", "y1", "x2", "y2"]].to_numpy(dtype=np.float32),
         confidence=group["conf"].to_numpy(dtype=np.float32),
-        class_id=group["cls"].to_numpy(dtype=int),
     )
+
+
+def _keep_classes(detections: pd.DataFrame, classes: tuple[str, ...]) -> pd.DataFrame:
+    """Drop the detected classes that are not worth tracking.
+
+    Referees and the ball are detected and stored, but a referee tracked like a
+    player produces the longest, cleanest tracklet in the clip and is not a
+    player at all. Filtering here rather than after tracking keeps the vendored
+    tracker untouched, which does not carry a class through anyway.
+    """
+    kept = detections[detections["cls"].isin(classes)]
+    if kept.empty:
+        raise SystemExit(
+            f"No detections left after filtering to {', '.join(classes)}. "
+            f"detections.parquet holds classes {sorted(detections['cls'].unique())[:6]}, "
+            "which means it predates the football detector. Re-run detect first."
+        )
+
+    dropped = detections["cls"].value_counts().drop(labels=list(classes), errors="ignore")
+    if not dropped.empty:
+        summary = ", ".join(f"{name} {count}" for name, count in dropped.items())
+        print(f"Tracking {', '.join(classes)}; skipped {summary}")
+    return kept
 
 
 def _display(frame, tracks, index: int) -> bool:
@@ -63,13 +91,18 @@ def _remove_stale_downstream(paths: artifacts.RunPaths) -> None:
 
 def run(args: argparse.Namespace) -> None:
     config = with_overrides(
-        load_config(args.config), "track", kind=args.tracker, conf_min=args.conf
+        load_config(args.config),
+        "track",
+        kind=args.tracker,
+        conf_min=args.conf,
+        classes=args.classes,
     )
     paths = artifacts.run_paths(args.run)
     meta = artifacts.video_meta(paths)
     detections = artifacts.read_table(paths.detections)
-    by_frame = {frame: group for frame, group in detections.groupby("frame")}
     stop = int(detections["frame"].max()) + 1
+    detections = _keep_classes(detections, config.track.classes)
+    by_frame = {frame: group for frame, group in detections.groupby("frame")}
 
     tracker = build_tracker(config, meta.fps)
     print(f"Tracking with {tracker.describe()}")

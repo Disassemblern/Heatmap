@@ -51,12 +51,14 @@ def run(args: argparse.Namespace) -> None:
     detector = YoloDetector(config.detect)
     stop = min(meta.n_frames, args.limit) if args.limit else meta.n_frames
 
-    artifacts.guard_truncation(paths.detections, stop, args.force)
-
     print(f"Detecting with {detector.describe()}")
     if args.show:
-        print("Showing detections. Press q to stop early; work so far is still saved.")
+        print(
+            "Showing detections. Press q to stop early; the frames done so far are "
+            "saved unless they would truncate a longer existing run."
+        )
 
+    names = detector.class_names
     records = []
     for index, frame in tqdm(iter_frames(meta.path, stop=stop), total=stop, unit="frame"):
         detections = detector.detect(frame)
@@ -73,7 +75,7 @@ def run(args: argparse.Namespace) -> None:
                 "x2": float(x2),
                 "y2": float(y2),
                 "conf": float(conf),
-                "cls": int(class_id),
+                "cls": names[int(class_id)],
             }
             for (x1, y1, x2, y2), conf, class_id in zip(
                 detections.xyxy, detections.confidence, detections.class_id, strict=True
@@ -83,15 +85,30 @@ def run(args: argparse.Namespace) -> None:
     if args.show:
         cv2.destroyWindow(WINDOW)
 
+    # stop may have shrunk if the user quit early, so this is the first point at
+    # which the guard can see how much of the clip was actually covered.
+    artifacts.guard_truncation(paths.detections, stop, args.force)
+
     table = pd.DataFrame.from_records(records)
+    if table.empty:
+        raise SystemExit("No detections produced; nothing written.")
+
+    per_class = table["cls"].value_counts()
     artifacts.write_table(table, paths.detections)
     artifacts.record_stage(
         paths,
         "detect",
-        {"detector": detector.describe(), "frames": stop, "detections": len(table)},
+        {
+            "detector": detector.describe(),
+            "frames": stop,
+            "detections": len(table),
+            "per_class": {name: int(count) for name, count in per_class.items()},
+        },
         config,
     )
 
     per_frame = len(table) / stop if stop else 0.0
     print(f"Wrote {len(table)} detections over {stop} frames ({per_frame:.1f} per frame)")
+    for name, count in per_class.items():
+        print(f"  {name:12s} {count:7d}  {count / stop:5.1f} per frame")
     print(f"Artifact: {paths.detections}")
