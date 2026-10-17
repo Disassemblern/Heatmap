@@ -42,6 +42,25 @@ def _detections_for_frame(group: pd.DataFrame) -> sv.Detections:
     )
 
 
+def _one_box_per_person(detections: pd.DataFrame, iou: float) -> pd.DataFrame:
+    """Keep the most confident of overlapping boxes, whatever class each was given.
+
+    The detector suppresses duplicates only within a class, so one goalkeeper can
+    carry a 'goalkeeper' and a 'player' box, and the tracker then follows him
+    with two ids. Done before the class filter, so a 'player' box sitting under a
+    more confident 'referee' box, which is an official, is dropped with it.
+    """
+    if iou <= 0:
+        return detections
+    detections = detections.reset_index(drop=True)
+    scored = detections[["x1", "y1", "x2", "y2", "conf"]].to_numpy(dtype=float)
+    keep = np.zeros(len(detections), dtype=bool)
+    for rows in detections.groupby("frame").indices.values():
+        keep[rows] = sv.box_non_max_suppression(scored[rows], iou_threshold=iou)
+    print(f"Dropped {int((~keep).sum())} boxes duplicating a more confident one on the same person")
+    return detections[keep]
+
+
 def _keep_classes(detections: pd.DataFrame, classes: tuple[str, ...]) -> pd.DataFrame:
     """Drop the detected classes that are not worth tracking.
 
@@ -101,6 +120,7 @@ def run(args: argparse.Namespace) -> None:
     meta = artifacts.video_meta(paths)
     detections = artifacts.read_table(paths.detections)
     stop = int(detections["frame"].max()) + 1
+    detections = _one_box_per_person(detections, config.track.cross_class_nms_iou)
     detections = _keep_classes(detections, config.track.classes)
     by_frame = {frame: group for frame, group in detections.groupby("frame")}
 

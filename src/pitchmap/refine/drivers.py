@@ -31,6 +31,15 @@ from pitchmap.vendor.gta_link.refine_tracklets import (
 # The vendored detect_id_switch silently subsamples inputs above this size in a
 # way that desynchronises its labels from the caller's rows; stay below it.
 MAX_SWITCH_SAMPLES = 15000
+# Consecutive colour samples needed before a change of team counts. Colour is
+# read on every frame where the player stands alone, so 12 is about half a
+# second of clear evidence: on the test clips that removed the cross-team
+# mix-ups (3 to 0 and 4 to 1), while one odd crop still cannot trigger it.
+COLOUR_RUN_SAMPLES = 12
+# A split counts only if the tracklet's box overlapped another player's within
+# this long of the change. The majority vote places a change to within about
+# half of min_split_s, so 1 s leaves margin.
+SWAP_WINDOW_S = 1.0
 
 TEAM_UNKNOWN = "unknown"
 VETO_DISTANCE = 1.0
@@ -38,14 +47,20 @@ VETO_DISTANCE = 1.0
 TeamLabels = dict[int, tuple[str, float]]
 
 
-def split_pass(tracklet_set: TrackletSet, config: RefineConfig, fps: float) -> TrackletSet:
+def split_pass(
+    tracklet_set: TrackletSet,
+    config: RefineConfig,
+    fps: float,
+    overlapping: np.ndarray | None = None,
+) -> TrackletSet:
     """Split tracklets whose embeddings cluster into several identities.
 
     Mirrors the vendored split_tracklets loop: short tracklets pass through,
     long ones are tested with DBSCAN over their per-detection embeddings, and a
     detected switch partitions the tracklet's rows by cluster label - after the
     labels are made contiguous in time, so a split is a change point rather than
-    frame-by-frame alternation.
+    frame-by-frame alternation. With overlapping (per raw row: the box touches
+    another player's), a change is kept only where a swap was possible.
     """
     min_run = int(round(config.min_split_s * fps))
     next_id = max(tracklet_set.tracklets) + 1
@@ -64,8 +79,13 @@ def split_pass(tracklet_set: TrackletSet, config: RefineConfig, fps: float) -> T
         labels = _switch_labels(tracklet.features, config)
         if labels is not None and min_run > 1:
             labels = _contiguous(labels, min_run)
-            if len(np.unique(labels)) < 2:
-                labels = None
+        if labels is not None and overlapping is not None:
+            times = np.asarray(tracklet.times)
+            labels = _possible_swaps(
+                labels, times, times, overlapping[track_rows], SWAP_WINDOW_S * fps
+            )
+        if labels is not None and len(np.unique(labels)) < 2:
+            labels = None
         if labels is None:
             tracklets[track_id] = tracklet
             rows[track_id] = track_rows
@@ -106,6 +126,69 @@ def _switch_labels(features: list[np.ndarray], config: RefineConfig) -> np.ndarr
     return np.asarray(sampled_labels)[nearest]
 
 
+def colour_split_pass(
+    tracklet_set: TrackletSet,
+    votes: dict[int, int],
+    overlapping: np.ndarray | None = None,
+    fps: float = 25.0,
+) -> TrackletSet:
+    """Split tracklets whose shirt colour changes team partway and stays changed.
+
+    The appearance-embedding split misses many of these: on the test clips about
+    one tracklet in eight followed a navy player, then a red one, from a single
+    tracker id. A change of team is unmistakable in shirt colour, though. votes
+    maps a raw row index to the team its sampled crop was clearly wearing.
+
+    Every sustained run of one team becomes its own piece, so a swap and a swap
+    back yield three pieces rather than rejoining two different players; merging
+    decides afterwards what belongs together. With overlapping, a change counts
+    only where a swap was possible, as in split_pass.
+    """
+    next_id = max(tracklet_set.tracklets) + 1
+    tracklets: dict[int, Tracklet] = {}
+    rows: dict[int, list[int]] = {}
+
+    for track_id in sorted(tracklet_set.tracklets):
+        tracklet = tracklet_set.tracklets[track_id]
+        track_rows = tracklet_set.rows[track_id]
+        order = np.argsort(tracklet.times, kind="stable")
+        sampled = [position for position in order if track_rows[position] in votes]
+        if len(sampled) < 2 * COLOUR_RUN_SAMPLES:
+            tracklets[track_id], rows[track_id] = tracklet, track_rows
+            continue
+
+        runs = _contiguous(np.array([votes[track_rows[p]] for p in sampled]), COLOUR_RUN_SAMPLES)
+        if overlapping is not None:
+            times = np.asarray(tracklet.times)
+            runs = _possible_swaps(
+                runs,
+                times[sampled],
+                times[order],
+                overlapping[np.asarray(track_rows)[order]],
+                SWAP_WINDOW_S * fps,
+            )
+        if len(np.unique(runs)) < 2:
+            tracklets[track_id], rows[track_id] = tracklet, track_rows
+            continue
+
+        # Each row joins the run of the nearest sampled row in time.
+        segment = np.r_[0, np.cumsum(np.diff(runs) != 0)]
+        sample_rank = np.searchsorted(sampled, order, side="left")
+        nearest = np.clip(sample_rank, 0, len(sampled) - 1)
+        earlier = np.clip(sample_rank - 1, 0, len(sampled) - 1)
+        sampled_arr = np.asarray(sampled)
+        use_earlier = np.abs(order - sampled_arr[earlier]) < np.abs(sampled_arr[nearest] - order)
+        piece_of = segment[np.where(use_earlier, earlier, nearest)]
+
+        for piece in np.unique(piece_of):
+            member = np.sort(order[piece_of == piece])
+            tracklets[next_id] = _subset(tracklet, next_id, member)
+            rows[next_id] = [track_rows[i] for i in member]
+            next_id += 1
+
+    return TrackletSet(tracklets=tracklets, rows=rows)
+
+
 def _contiguous(labels: np.ndarray, min_run: int) -> np.ndarray:
     """Turn per-row cluster labels into runs of at least min_run rows.
 
@@ -135,6 +218,33 @@ def _contiguous(labels: np.ndarray, min_run: int) -> np.ndarray:
         right = lengths[k + 1] if k + 1 < len(lengths) else -1
         neighbour = starts[k - 1] if left >= right else starts[k + 1]
         voted[starts[k] : ends[k]] = voted[neighbour]
+
+
+def _possible_swaps(
+    labels: np.ndarray,
+    label_times: np.ndarray,
+    times: np.ndarray,
+    overlapping: np.ndarray,
+    window: float,
+) -> np.ndarray:
+    """Undo label changes where the tracker cannot have swapped people.
+
+    A tracker can only jump to someone whose box touches the one it follows. A
+    change of appearance anywhere else is the same player turning, blurring or
+    stepping into shadow, so the later run is relabelled as a continuation of
+    the earlier one. labels and label_times describe rows in time order (every
+    row, or only the colour-sampled ones); times and overlapping cover every
+    row of the tracklet, also in time order.
+    """
+    kept = labels.copy()
+    starts = np.flatnonzero(np.diff(labels) != 0) + 1
+    ends = np.r_[starts[1:], len(labels)]
+    for start, end in zip(starts, ends):
+        low = np.searchsorted(times, label_times[start - 1] - window)
+        high = np.searchsorted(times, label_times[start] + window, side="right")
+        if not overlapping[low:high].any():
+            kept[start:end] = kept[start - 1]
+    return kept
 
 
 def _subset(tracklet: Tracklet, new_id: int, member: np.ndarray) -> Tracklet:

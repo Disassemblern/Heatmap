@@ -39,6 +39,27 @@ def pitch_positions(
     return metres
 
 
+def overlapping_rows(tracks: pd.DataFrame) -> np.ndarray:
+    """Whether each row's box overlaps another box in the same frame, row-aligned.
+
+    Image space is the right place for this question, unlike for merging: a
+    tracker swaps identities where boxes touch, wherever the camera points.
+    """
+    boxes = tracks[["x1", "y1", "x2", "y2"]].to_numpy(dtype=float)
+    touching = np.zeros(len(tracks), dtype=bool)
+    for index in tracks.groupby("frame").indices.values():
+        b = boxes[index]
+        overlap = (
+            (b[:, None, 0] < b[None, :, 2])
+            & (b[None, :, 0] < b[:, None, 2])
+            & (b[:, None, 1] < b[None, :, 3])
+            & (b[None, :, 1] < b[:, None, 3])
+        )
+        np.fill_diagonal(overlap, False)
+        touching[index] = overlap.any(axis=1)
+    return touching
+
+
 def required_speed(
     times_a: list[int],
     rows_a: list[int],

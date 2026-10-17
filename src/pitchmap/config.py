@@ -46,8 +46,17 @@ class TrackConfig:
     appearance_thresh: float = 0.25
     min_box_area: float = 10.0
     # Camera motion compensation. The vendored tracker has multi_gmc, but nothing
-    # reads this flag yet.
+    # reads this flag. Tried in the wrapper (camera warp plus the player's own
+    # velocity for lost tracks): fewer id changes on screen, but more ids moved
+    # to the wrong player at crossings, judged by eye, so it was removed.
     cmc: bool = False
+    # Boxes of different classes on one person (a 'player' and a 'goalkeeper'
+    # box, or a 'player' box under a referee's) overlapping above this IoU are
+    # reduced to the most confident one before tracking; 0 keeps them all.
+    # 0.85 ends the goalkeeper's twin ids, but where the keeper stands on top of
+    # an outfield player it also drops a real player's box (4 extra mix-ups
+    # judged on the test clips), so it is off.
+    cross_class_nms_iou: float = 0.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "classes", tuple(self.classes))
@@ -64,7 +73,15 @@ class ReidConfig:
 
 @dataclass(frozen=True)
 class RefineConfig:
-    use_split: bool = True
+    # Split where a tracklet's appearance embeddings cluster into two people.
+    # Off: with the football detector and the colour split, it caused most of
+    # the visible id changes (p01 105/min with it, 10/min without) and bought
+    # no measurable purity. Of 24 sampled cuts it still made at contact, 20
+    # were plainly the same player on both sides.
+    use_split: bool = False
+    # Split where a tracklet's shirt colour changes team and stays changed: a
+    # tracker swap between teams that appearance embeddings often miss.
+    use_colour_split: bool = True
     use_connect: bool = True
     # DBSCAN neighbourhood for detecting an identity switch inside a tracklet.
     # Upstream ships 0.7; measured on this footage, 0.4 raises tracklet purity
@@ -79,6 +96,12 @@ class RefineConfig:
     # clip, 1 s cut open-field id switches from 3.67% to 0.28% while tracklets
     # stayed as pure. 0 restores per-frame splitting.
     min_split_s: float = 1.0
+    # Keep a split only where the tracklet's box touched another player's
+    # around that moment: a tracker can only swap people in contact, so a
+    # change in open space is one player's appearance drifting. Without it,
+    # refine turned one player into several ids roughly ten times as often as
+    # the raw tracker did.
+    split_only_at_contact: bool = True
     min_len_frames: int = 100
     spatial_factor: float = 1.0
     merge_dist_thres: float = 0.4
@@ -95,7 +118,10 @@ class RefineConfig:
 
 @dataclass(frozen=True)
 class TeamConfig:
-    samples_per_tracklet: int = 80
+    # Crops read per tracklet; 0 reads every frame. The colour split needs every
+    # frame: at 80 per tracklet a swap had to last about 8 s to be seen, and
+    # reading every box costs about 18 s per 2-minute clip.
+    samples_per_tracklet: int = 0
     min_rows: int = 5
     min_cluster_track_s: float = 10.0
     # Distance to the nearer team centroid, as a fraction of the gap between

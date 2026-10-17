@@ -75,7 +75,7 @@ def _render_tracking(paths, meta, config, stop: int) -> None:
         else {}
     )
 
-    colours = teams.load_track_colours(paths, tracks)
+    colours = teams.load_track_colours(paths)
     if colours is not None:
         print("Colouring boxes by team label.")
 

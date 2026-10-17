@@ -200,6 +200,26 @@ def assign_teams(
     return label_colours(per_tracklet, colours, centroids, space, config), centroids, space
 
 
+def sample_votes(
+    features: JerseyFeatures, centroids: np.ndarray, space: str, config: TeamConfig
+) -> dict[int, int]:
+    """Team of each sampled crop, keyed by raw row index: 0 for A, 1 for B.
+
+    Only crops clearly in a team colour vote; a crop of a goalkeeper, an
+    official or a player half hidden behind someone else says nothing about
+    which team the tracklet is following.
+    """
+    has_pixels = features.n_pixels > 0
+    _, near_a, near_b = _distance_ratios(project(features.lab, space), project(centroids, space))
+    ratio, _, _ = _distance_ratios(features.lab, centroids)
+    clear = has_pixels & (ratio <= config.other_dist_ratio)
+    return {
+        int(row): int(near_b[i] < near_a[i])
+        for i, row in enumerate(features.row_index)
+        if clear[i]
+    }
+
+
 def label_rows(
     rows_per_tracklet: dict[int, list[int]],
     features: JerseyFeatures,

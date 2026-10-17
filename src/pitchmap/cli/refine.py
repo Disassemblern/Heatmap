@@ -22,7 +22,12 @@ from pitchmap.track.metrics import format_summary, fragmentation_summary
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--run", required=True, help="Run directory")
-    parser.add_argument("--no-split", action="store_true", help="Skip the identity-switch split")
+    parser.add_argument(
+        "--split", action="store_true", help="Also run the appearance split (off by default)"
+    )
+    parser.add_argument(
+        "--no-colour-split", action="store_true", help="Skip the split at a change of shirt colour"
+    )
     parser.add_argument("--no-connect", action="store_true", help="Skip the fragment reconnect")
     parser.add_argument(
         "--no-team-constraint", action="store_true", help="Merge without the team veto"
@@ -36,6 +41,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         type=float,
         default=None,
         help="Seconds a split must hold (0 splits frame by frame, the old behaviour)",
+    )
+    parser.add_argument(
+        "--split-anywhere",
+        action="store_true",
+        help="Also split where the player touched nobody (the old behaviour)",
     )
 
 
@@ -139,16 +149,18 @@ def run(args: argparse.Namespace) -> None:
     config = with_overrides(
         load_config(args.config),
         "refine",
-        use_split=False if args.no_split else None,
+        use_split=True if args.split else None,
+        use_colour_split=False if args.no_colour_split else None,
         use_connect=False if args.no_connect else None,
         use_team_constraint=False if args.no_team_constraint else None,
         eps=args.eps,
         merge_dist_thres=args.merge_dist,
         min_split_s=args.min_split,
+        split_only_at_contact=False if args.split_anywhere else None,
     )
     refine = config.refine
-    if not refine.use_split and not refine.use_connect:
-        raise SystemExit("Nothing to do: both split and connect are disabled.")
+    if not (refine.use_split or refine.use_colour_split or refine.use_connect):
+        raise SystemExit("Nothing to do: every split and the connect are disabled.")
 
     paths = artifacts.run_paths(args.run)
     meta = artifacts.video_meta(paths)
@@ -159,14 +171,24 @@ def run(args: argparse.Namespace) -> None:
     n_input = len(tracklet_set.tracklets)
     print(f"Refining {n_input} tracklets from {paths.tracks_raw.name}")
 
+    overlapping = geometry.overlapping_rows(raw) if refine.split_only_at_contact else None
+    cache = _load_jersey_cache(paths)
+    n_colour = len(tracklet_set.tracklets)
+    if refine.use_colour_split and cache is not None:
+        votes = assign.sample_votes(*cache, config.team)
+        tracklet_set = drivers.colour_split_pass(tracklet_set, votes, overlapping, meta.fps)
+        print(f"After colour split: {len(tracklet_set.tracklets)} tracklets")
+    elif refine.use_colour_split:
+        print("No team colours yet (run 'team' first); skipping the colour split.")
+    n_colour = len(tracklet_set.tracklets) - n_colour
+
     if refine.use_split:
-        tracklet_set = drivers.split_pass(tracklet_set, refine, meta.fps)
+        tracklet_set = drivers.split_pass(tracklet_set, refine, meta.fps, overlapping)
         print(f"After split: {len(tracklet_set.tracklets)} tracklets")
     n_split = len(tracklet_set.tracklets)
 
     positions = _pitch_positions(paths, raw, refine)
 
-    cache = _load_jersey_cache(paths)
     rejected: dict[str, int] = {}
     if refine.use_connect:
         labels = None
@@ -206,6 +228,8 @@ def run(args: argparse.Namespace) -> None:
             "use_team_constraint": refine.use_team_constraint,
             "eps": refine.eps,
             "min_split_s": refine.min_split_s,
+            "split_only_at_contact": refine.split_only_at_contact,
+            "colour_split_added": n_colour,
             "merge_dist_thres": refine.merge_dist_thres,
             **summary,
         },

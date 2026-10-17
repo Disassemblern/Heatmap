@@ -53,9 +53,30 @@ def named_positions(run_dir: Path) -> pd.DataFrame:
         return pd.DataFrame()
 
     positions = artifacts.read_table(paths.positions)
-    fps = artifacts.video_meta(paths).fps
+    meta = artifacts.read_meta(paths)
+    fps = meta["video"]["fps"]
+    # Clips from `cut` overlap; placing every frame on the recording's own frame
+    # numbers lets the shared seconds be counted once. A run that is not a cut
+    # clip keeps a source of its own, so it never collides with another.
+    clip = meta.get("clip")
+    source, first = (clip["source"], round(clip["start_s"] * fps)) if clip else (name, 0)
     pooled = positions[positions["valid"]].merge(named[["track_id", "player"]], on="track_id")
-    return pooled.assign(run=name, seconds=1.0 / fps)
+    return pooled.assign(
+        run=name, seconds=1.0 / fps, source=source, abs_frame=pooled["frame"] + first
+    )
+
+
+def _warn_double_naming(pooled: pd.DataFrame) -> None:
+    """A player on two tracklets in the same frame means one of them is someone else."""
+    per_frame = pooled.groupby(["run", "key", "frame"])["track_id"].nunique()
+    for run, key in per_frame[per_frame > 1].index.droplevel("frame").unique():
+        rows = pooled[(pooled["run"] == run) & (pooled["key"] == key)]
+        clashing = rows.groupby("frame")["track_id"].transform("nunique") > 1
+        ids = ", ".join(str(t) for t in sorted(rows.loc[clashing, "track_id"].unique()))
+        print(
+            f"Warning: {rows['player'].iloc[0]} is on tracklets {ids} at the same time "
+            f"in {run}; one of them is someone else."
+        )
 
 
 def _slug(name: str) -> str:
@@ -75,6 +96,11 @@ def run(args: argparse.Namespace) -> None:
     pooled = pd.concat(frames, ignore_index=True)
     # 'Saka' and 'saka ' are the same player; a typo in case should not split them.
     pooled = pooled.assign(key=pooled["player"].str.casefold())
+    _warn_double_naming(pooled)
+    before = len(pooled)
+    pooled = pooled.drop_duplicates(subset=["key", "source", "abs_frame"])
+    if len(pooled) < before:
+        print(f"Counted {before - len(pooled)} overlapping frames once rather than twice.")
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)

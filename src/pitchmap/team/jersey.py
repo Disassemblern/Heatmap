@@ -44,9 +44,9 @@ class JerseyFeatures:
 
 
 def sample_rows(tracks: pd.DataFrame, per_tracklet: int) -> pd.DataFrame:
-    """Up to per_tracklet rows per tracklet, spread evenly over its life."""
+    """Up to per_tracklet rows per tracklet, spread evenly over its life; 0 means every row."""
     def spread(group: pd.DataFrame) -> pd.DataFrame:
-        if len(group) <= per_tracklet:
+        if per_tracklet <= 0 or len(group) <= per_tracklet:
             return group
         positions = np.linspace(0, len(group) - 1, per_tracklet).astype(int)
         return group.iloc[positions]

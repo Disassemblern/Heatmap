@@ -8,12 +8,14 @@ stage uses as a hard constraint on merging.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 
 import numpy as np
 
 from pitchmap.config import load_config, with_overrides
 from pitchmap.heat import accumulate
 from pitchmap.io import artifacts
+from pitchmap.refine import geometry
 from pitchmap.team import assign, jersey
 
 
@@ -50,6 +52,42 @@ def _fit_ids(paths: artifacts.RunPaths, tracks, fps: float, config) -> set[int]:
     return long_ids & accumulate.on_pitch_tracklets(positions, config.pitch)
 
 
+def _goalkeepers(tracks, detections) -> set[int]:
+    """Tracklets the detector mostly classed as goalkeeper.
+
+    A goalkeeper's kit is chosen to differ from both teams. Fitting the two team
+    colours with a goalkeeper included drags one centroid onto that kit and
+    lumps both outfield teams together, which is what happened on short clips,
+    where a goalkeeper's long, steady tracklet carries a lot of weight. Track
+    boxes are the detector's own boxes, so a join on frame and box recovers each
+    row's class.
+    """
+    if "cls" not in detections.columns:
+        return set()
+    key = ["frame", "x1", "y1", "x2", "y2"]
+
+    def rounded(table):
+        return table.assign(**{column: table[column].round(2) for column in key[1:]})
+
+    joined = rounded(tracks[["track_id", *key]]).merge(
+        rounded(detections[[*key, "cls"]]).drop_duplicates(key), on=key, how="left"
+    )
+    share = (joined["cls"] == "goalkeeper").groupby(joined["track_id"]).mean()
+    return set(share[share > 0.5].index)
+
+
+def _alone_only(features: jersey.JerseyFeatures, tracks) -> jersey.JerseyFeatures:
+    """Keep the colour only of crops whose box overlaps no other player's.
+
+    Where two boxes overlap, either torso crop may show the other player's
+    shirt: a navy player standing behind a red one reads as red. Every later
+    use of colour (team labels, the team colour fit, the colour split in refine)
+    skips crops without pixels, so blanking them here keeps all of them honest.
+    """
+    touching = geometry.overlapping_rows(tracks)[features.row_index]
+    return replace(features, n_pixels=np.where(touching, 0, features.n_pixels))
+
+
 def run(args: argparse.Namespace) -> None:
     config = with_overrides(
         load_config(args.config),
@@ -66,13 +104,17 @@ def run(args: argparse.Namespace) -> None:
 
     sampled = jersey.sample_rows(tracks, config.team.samples_per_tracklet)
     print(f"Sampling {len(sampled)} crops for jersey colour")
-    features = jersey.extract_features(meta.path, sampled)
+    features = _alone_only(jersey.extract_features(meta.path, sampled), tracks)
+    print(f"Kept the colour of {int((features.n_pixels > 0).sum())} crops where the player stood alone")
 
     per_tracklet, colours = assign.tracklet_features(tracks, features)
     if per_tracklet.empty:
         raise SystemExit("No usable jersey colours found; cannot assign teams.")
 
-    fit_ids = _fit_ids(paths, tracks, meta.fps, config)
+    goalkeepers = _goalkeepers(tracks, artifacts.read_table(paths.detections))
+    fit_ids = _fit_ids(paths, tracks, meta.fps, config) - goalkeepers
+    if goalkeepers:
+        print(f"Leaving {len(goalkeepers)} goalkeeper tracklet(s) out of the team colour fit")
     labels, centroids, space = assign.assign_teams(
         per_tracklet, colours, fit_ids, config.team
     )
@@ -95,6 +137,7 @@ def run(args: argparse.Namespace) -> None:
         {
             "tracklets": int(len(labels)),
             "fitted_on": len(fit_ids),
+            "goalkeepers_excluded": len(goalkeepers),
             **{f"n_{name}": int(count) for name, count in counts.items()},
         },
         config,

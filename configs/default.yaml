@@ -25,8 +25,10 @@ track:
   proximity_thresh: 0.5
   appearance_thresh: 0.25
   min_box_area: 10.0
-  # not wired up yet
+  # not wired up; tried and removed (more wrong-player ids at crossings)
   cmc: false
+  # one box per person across classes before tracking (0.85 ends keeper twin ids); 0 keeps every box
+  cross_class_nms_iou: 0.0
 
 reid:
   model_path: models/osnet_sports.pth.tar-60
@@ -36,7 +38,9 @@ reid:
   device: cuda
 
 refine:
-  use_split: true
+  # appearance split: off, it split one player into many ids far more often than it caught a swap
+  use_split: false
+  use_colour_split: true
   use_connect: true
   # upstream gta-link defaults
   eps: 0.4
@@ -44,6 +48,8 @@ refine:
   max_k: 3
   # a split must hold this long; stops pose/blur noise flickering one player between two ids
   min_split_s: 1.0
+  # only split where the player's box touched someone else's; elsewhere a tracker cannot swap people
+  split_only_at_contact: true
   min_len_frames: 100
   spatial_factor: 1.0
   merge_dist_thres: 0.4
@@ -53,7 +59,8 @@ refine:
   max_speed_ms: 12.0
 
 team:
-  samples_per_tracklet: 80
+  # 0 = read the shirt colour on every frame; the colour split needs it to catch short swaps
+  samples_per_tracklet: 0
   min_rows: 5
   min_cluster_track_s: 10.0
   other_dist_ratio: 0.55

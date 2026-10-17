@@ -33,6 +33,7 @@ video -> detect -> calibrate -> track -> team -> refine -> project -> heatmap
 | `project` | `positions.parquet` | Foot points projected into pitch metres |
 | `heatmap` | `heatmaps/*.png` | Per-tracklet occupancy maps on a pitch |
 | `overlay` | `overlays/*.mp4` | Calibration and tracking sanity videos |
+| `link` | names in the next clip's `review.csv` | Carries player names into the next clip through the frames they share |
 | `combine` | a directory of `player_<name>.png` | One heatmap per named player, pooled across several runs |
 
 ## Setup
@@ -117,9 +118,15 @@ hm_env\Scripts\python.exe -m pitchmap cut --video data\raw\half1.mp4 --every 5
 
 That writes `half1_p01.mp4`, `half1_p02.mp4`, ... next to the recording and
 prints the time range each one covers. For a single range instead, use
-`--start 10:00 --end 15:00`. The video stream is copied, not re-encoded, so it
-is instant and the detector sees identical pixels; cuts land on the nearest
-keyframe, within a second or two of the requested time.
+`--start 10:00 --end 15:00`.
+
+Each clip shares its last 5 seconds with the start of the next (`--overlap` to
+change it). Those shared frames are what let names carry from one clip into the
+next, below. The video stream is copied, not re-encoded, so cutting is instant
+and both clips contain bit-identical frames in the overlap. A copied clip can
+only start on a keyframe (every 10 s on the test clip), so each one starts on the
+keyframe at or before the requested time, and its exact start goes into a
+`<clip>.json` beside it. Keep that file next to the clip: `init-run` reads it.
 
 Then, per clip:
 
@@ -147,8 +154,24 @@ next to the contact sheets in `review\` and type a name or shirt number in the
 `player` column for each tracklet you recognise. Blank rows are skipped; set
 `verdict` to `mixed` for any strip that shows two different people.
 
-Track ids are numbered from scratch in every run, so id 5 in one clip has
-nothing to do with id 5 in the next. The names are what link the clips:
+You only name players from scratch once, in the first clip. Track ids are
+numbered afresh in every run, so id 5 in one clip has nothing to do with id 5 in
+the next, but the overlap connects them:
+
+```powershell
+hm_env\Scripts\python.exe -m pitchmap link --prev data\runs\half1_p01 --run data\runs\half1_p02
+```
+
+`link` first checks that the two clips really show the same frames in the
+overlap (identical frames give identical detections), then matches each
+tracklet of the new clip to the one it continues and writes that name into the
+new clip's `review.csv`. It only fills empty cells: a name you typed is never
+overwritten, and a disagreement is printed so you can decide which is right.
+Tracklets shorter than the review minimum (20 s) have no row to hold a name and
+are listed instead. Check the carried names, add the rest, then link the next
+pair.
+
+Finally, pool every clip of the half:
 
 ```powershell
 hm_env\Scripts\python.exe -m pitchmap combine --out data\combined\half1 `
@@ -157,9 +180,12 @@ hm_env\Scripts\python.exe -m pitchmap combine --out data\combined\half1 `
 
 `combine` pools the positions of every tracklet with the same name (case does
 not matter) and draws one heatmap per player, so each clip counts in proportion
-to how long the player was seen in it. It refuses a run whose `review.csv` was
-written against different tracklets, which happens whenever `refine` re-runs.
-Pool one half at a time: teams change ends at half time.
+to how long the player was seen in it. The overlap seconds appear in two clips,
+so it counts each frame of the recording once. It refuses a run whose
+`review.csv` was written against different tracklets, which happens whenever
+`refine` re-runs, and warns when one name sits on two tracklets at the same
+moment, since one of them must be someone else. Pool one half at a time: teams
+change ends at half time.
 
 ## Layout
 
@@ -227,9 +253,9 @@ the keypoint model's localisation bias, measured at roughly half a metre.
 **2. Tracking overlay** - `data/runs/<clip>/overlays/tracking_check.mp4`.
 Boxes with track ids, plus a pitch minimap inset showing where each tracked
 player was projected. Once the team stage has run, boxes and minimap dots are
-drawn in each team's own average kit colour, so a mislabelled player shows up as
-a box whose colour disagrees with the shirt inside it. Watch the id numbers
-across occlusions: they should survive players crossing.
+drawn in each team's fitted kit colour, and `other` in yellow, so a mislabelled
+player shows up as a box whose colour disagrees with the shirt inside it. Watch
+the id numbers across occlusions: they should survive players crossing.
 
 **3. Heatmaps** - `data/runs/<clip>/heatmaps/`. `player_<id>.png` per tracklet,
 `all_tracklets_grid.png` for a contact sheet, `aggregate.png` for all positions.
@@ -242,16 +268,16 @@ Numbers worth checking, printed by the stages themselves:
 | `detect` | about 28 per frame: 23 player, 2.4 referee, 1.2 ball, 1.0 goalkeeper |
 | `calibrate` | 5499/5500 frames, median residual 0.52 m |
 | `track` | 255 raw tracklets, coverage 0.97 |
-| `team` | an even A/B split (30/20 after refine), silhouette above 0.5 |
-| `refine` | 62 tracklets, 40 over 20 s averaging 112 s, coverage 0.97 |
+| `team` | an even A/B split (18/16 after refine), silhouette above 0.5 |
+| `refine` | 59 tracklets, 37 over 20 s averaging 124 s, coverage 0.97 |
 | `project` | about 89 percent valid, median implied speed under 2 m/s |
-| `heatmap` | 35 rendered of 62, officials and touchline staff skipped |
+| `heatmap` | 31 rendered of 59, officials and touchline staff skipped |
 
 Read `track`'s raw tracklet count with care: most of those 255 are single-frame
 specks holding 0.3 percent of the rows between them, so the median length is a
 meaningless statistic on that table. What matters is coverage, and how much data
-ends up in tracklets long enough to use - after `refine`, 96 percent of valid
-positions sit in the 40 tracklets lasting 20 s or more.
+ends up in tracklets long enough to use - after `refine`, 98 percent of tracked
+boxes sit in the 37 tracklets lasting 20 s or more.
 
 Every stage records what it actually ran with in `data/runs/<clip>/meta.json`,
 under its own entry. The `config` it stamps there lists only what differed from
@@ -290,7 +316,11 @@ hm_env\Scripts\python.exe -m pitchmap track --run data\runs\fixed_clip --classes
 ## Team assignment
 
 Tracklets are clustered into two teams by the median colour of the player torso,
-with pitch-green pixels masked out. Clustering runs in chroma (Lab without
+with pitch-green pixels masked out. Colour is read on every frame, but kept only
+where the player's box overlaps nobody else's: where two boxes overlap, either
+crop may show the other player's shirt. Measured on the test clips, a navy player
+who spent most of a clip behind red players was labelled red until overlapping
+crops were left out. Clustering runs in chroma (Lab without
 lightness) when that separates the kits better than full Lab, which it usually
 does: lightness mostly follows shadow and floodlighting rather than kit identity.
 On the test clip chroma scores 0.63 against 0.52 for full Lab.
@@ -301,18 +331,26 @@ the gap between the two centroids belongs to neither team and is labelled
 not depend on the feature space or on how contrasting the two kits are. On the
 test clip real players reach 0.48 and officials start at 0.73.
 
+Goalkeepers are left out when the two team colours are fitted, recognised by
+the detector's goalkeeper class. A keeper's kit is chosen to differ from both
+teams, and with one in the fit, the clustering can spend a whole team centroid
+on it and lump both outfield teams together. On 2-minute clips that is exactly
+what happened: 41 tracklets labelled A against 4 labelled B, until the keepers
+were excluded (then 18 A, 20 B). Their colour still labels them `other`.
+
 A wrong team colour is usually not a colour problem. It means the tracklet
 contains more than one person, so no single label can be right. Tracklet purity
 - how consistently the rows of a tracklet vote for one team - is therefore the
-metric that matters, and it is what the split threshold was tuned against.
+metric that matters.
 
 ## Tracking
 
 Identity is held by Deep-EIoU (sports-specific association plus OSNet appearance
-embeddings trained on sports footage), then repaired offline: `refine` splits
-tracklets whose embeddings cluster into more than one identity, and reconnects
-fragments that belong to the same person, refusing any merge between tracklets
-confidently assigned to different teams.
+embeddings trained on sports footage), then repaired offline: `refine` splits a
+tracklet where its shirt colour changes team, and reconnects fragments that
+belong to the same person, refusing any merge between tracklets confidently
+assigned to different teams or one that would need a player to run faster than
+12 m/s.
 
 Measured on the test clip:
 
@@ -320,23 +358,56 @@ Measured on the test clip:
 | --- | --- | --- | --- |
 | COCO `person` detections | 61 | 66 s | 0.83 |
 | football detections | 51 | 88 s | 0.97 |
-| football detections, 1 s split rule | 40 | 112 s | 0.97 |
+| football detections, appearance split | 40 | 112 s | 0.97 |
+| football detections, colour split only (default) | 37 | 124 s | 0.97 |
 
-The same 19 players' worth of data ends up in fewer, longer pieces: about 2.1
+The same 19 players' worth of data ends up in fewer, longer pieces: about 1.9
 tracklets per player on the test clip.
 
-The split rule matters more than its size suggests. `refine` finds identity
-switches by clustering a tracklet's appearance embeddings, and it used to assign
-each frame to a cluster on its own. One player's embedding wobbles with pose,
-motion blur and shadow, so neighbouring frames alternated between two clusters
-and the player became two ids flickering back and forth, even with nobody near
-them. A real switch is sustained - the tracker moved to someone else and stayed
-there - so a split now has to hold for `refine.min_split_s` (1 s): labels are
-majority-voted over that window and shorter runs are absorbed. For players in
-open space, frame-to-frame id switches fell from 3.67 to 0.28 percent, and
-tracklets stayed as pure. Most switches left happen where players overlap, which
-no appearance model can fully resolve. `refine --min-split 0` restores the old
-behaviour for comparison.
+The colour split catches the tracker swapping from one player to another at a
+collision when the two are on different teams: on the 2-minute test clips about
+one tracklet in eight followed a navy player and then a red one. Because colour
+is read on every frame where the player stands alone, half a second on the other
+team's player is enough to cut. Only crops clearly in a team colour vote, so a
+goalkeeper or a half-hidden player cannot trigger a split, and a swap followed
+by a swap back gives three pieces rather than rejoining two different players.
+`refine --no-colour-split` turns it off.
+
+Counted as stretches of at least half a second where an id sits on a player of
+the other team while he stands alone:
+
+| Clip | Raw tracker | Colour sampled 80 times per tracklet | Every frame |
+| --- | --- | --- | --- |
+| 1 | 6 | 3 | 0 |
+| 2 | 11 | 4 | 1 |
+
+Sampled sparsely, a swap had to last about 8 s before the split could see it.
+
+A split is only accepted where the player's box touched another player's within
+a second of it, because a tracker cannot swap two people who never touch. All 19
+cross-team swaps on the two test clips passed that test. `refine
+--split-anywhere` lifts it.
+
+`refine` can also split a tracklet whose appearance embeddings cluster into two
+identities (`refine --split`). It is off by default. With the COCO detector it
+was what kept tracklets pure, but with the football detector and the colour
+split it no longer pays: it was what made id numbers keep changing on screen.
+Counted as how often one player's id changes between consecutive frames, across
+everyone on screen:
+
+| `refine` setup | Clip 1 | Clip 2 | Tracklets mixing two teams |
+| --- | --- | --- | --- |
+| raw tracker, no `refine` | 8 / min | 14 / min | - |
+| appearance split on | 105 / min | 78 / min | 1 and 1 |
+| appearance split off | 10 / min | 20 / min | 0 and 0 |
+
+The appearance split cannot tell a swap from the same player turning, blurring
+or stepping into shadow. Even restricted to moments of contact, 20 of 24 sampled
+cuts showed the same player on both sides when checked by eye. The case it was
+meant for, a swap between two teammates, is left to the human review below,
+where it shows up as a strip with two different people in it. When it is turned
+on, a split also has to hold for `refine.min_split_s` (1 s), which stops one
+player flickering between two ids frame by frame.
 
 `refine` always works from `tracks_raw.parquet`, so re-running it with different
 parameters is idempotent and never compounds. `track` deletes the refine and
@@ -378,9 +449,13 @@ into exactly one heatmap per player, within a clip or pooled across a half with
 
 Remaining gaps:
 
-- Identity still breaks where players overlap: 3.4 percent of frame-to-frame
-  pairs there, against 0.28 percent in open space. Two players in the same kit
-  crossing is the case no appearance model can settle.
+- Identity still breaks where players cross: about 10 to 20 id changes a
+  minute across everyone on screen, close to the raw tracker's own rate. A swap
+  between two teammates is not detected automatically; it shows up as a mixed
+  strip in `review`.
+- A swap between a player and a goalkeeper or official is not cut either: their
+  kits belong to neither team, and the colour of a single crop is too noisy to
+  separate them reliably.
 - Naming is manual, by design: a person recognises a shirt number in seconds,
   and nothing automatic can link two fragments of the same player reliably.
 - Human-judged accuracy has not been re-measured since the detector changed.

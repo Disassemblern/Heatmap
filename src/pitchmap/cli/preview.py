@@ -60,11 +60,7 @@ def run(args: argparse.Namespace) -> None:
     calibration = (
         artifacts.read_homographies(paths) if args.kind == "calib" else None
     )
-    colours = (
-        teams.load_track_colours(paths, artifacts.read_table(paths.tracks))
-        if args.kind == "track"
-        else None
-    )
+    colours = teams.load_track_colours(paths) if args.kind == "track" else None
 
     stop = min(meta.n_frames, args.start + args.limit) if args.limit else meta.n_frames
     delay = _delay_ms(meta.fps, args.speed)
